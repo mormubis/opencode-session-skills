@@ -98,11 +98,13 @@ If the session might be active in another terminal, use `fork` to avoid conflict
 
 ### Discover a running server
 
-Every OpenCode instance runs a server on a random port. Any server can reach any session (shared database).
+Multiple `opencode serve` processes may be running, each on a random port. All share the same SQLite database. Any server can push to any session.
 
 ```bash
-OC_PORT=$(lsof -i -P -n 2>/dev/null | grep "opencode.*LISTEN" | head -1 | awk '{print $9}' | cut -d: -f2)
-curl -s "http://127.0.0.1:$OC_PORT/global/health"
+for port in $(lsof -i -P -n 2>/dev/null | grep "opencode.*LISTEN" | awk '{print $9}' | cut -d: -f2 | sort -u); do
+  code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 "http://127.0.0.1:$port/global/health" 2>/dev/null)
+  if [ "$code" = "200" ]; then OC_PORT=$port; break; fi
+done
 ```
 
 ### Context injection (no AI response)
@@ -131,6 +133,12 @@ curl -s -X POST "http://127.0.0.1:$OC_PORT/session/$SESSION_ID/prompt_async" \
 ```
 
 Use `/session/$SESSION_ID/message` (without `noReply`) for the synchronous variant that waits for the AI response.
+
+## Limitations
+
+**Pushed messages don't appear in real-time.** OpenCode's event bus is per-process and in-memory. A message pushed through the REST API writes to the shared SQLite database, but only the server that processed the request emits SSE events. The standalone TUI has no external socket, so it never receives the event. Users will see pushed messages when they re-enter the session. This is a [known OpenCode limitation](https://github.com/anomalyco/opencode/issues/2783).
+
+**Some servers may require auth.** If `OPENCODE_SERVER_PASSWORD` is set, the server uses HTTP Basic Auth (`opencode:<password>`). The discovery loop skips servers that return 401.
 
 ## Common Mistakes
 
