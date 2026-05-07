@@ -14,14 +14,7 @@ Agent skills for managing OpenCode sessions. Find past conversations, push messa
 ## Install
 
 ```bash
-git clone https://github.com/mormubis/opencode-session-skills.git
-ln -s "$(pwd)/opencode-session-skills/skills/"* ~/.config/opencode/skills/
-```
-
-Or install a single skill:
-
-```bash
-ln -s "$(pwd)/opencode-session-skills/skills/session-push" ~/.config/opencode/skills/
+opencode plug github:mormubis/opencode-session-skills --global
 ```
 
 Skills are discovered automatically on the next OpenCode session.
