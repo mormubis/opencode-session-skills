@@ -1,36 +1,30 @@
 # opencode-session-skills
 
-Agent skills for managing OpenCode sessions. Find past conversations, push messages between sessions, and jump to conversations in other projects.
-
-## Skills
-
-| Skill | Description |
-|-------|-------------|
-| `recover-opencode-conversation` | Search and read past OpenCode conversations via SQLite |
-| `push-message-to-session` | Send messages or context to another session via REST API |
-| `jump-to-conversation` | Open another session in a new terminal (resume or fork) |
+Agent skill for managing OpenCode sessions. Find past conversations, read their content, push messages between sessions, and jump to conversations across projects.
 
 ## Install
 
-Symlink the skills directory into your OpenCode config:
+Clone the repo and symlink the skill into your OpenCode config:
 
 ```bash
-ln -s /path/to/opencode-session-skills/skills/* ~/.config/opencode/skills/
+git clone https://github.com/mormubis/opencode-session-skills.git
+ln -s "$(pwd)/opencode-session-skills/skills/opencode-session-management" ~/.config/opencode/skills/
 ```
 
-Or for a single skill:
+The skill is discovered automatically on the next OpenCode session.
 
-```bash
-ln -s /path/to/opencode-session-skills/skills/push-message-to-session ~/.config/opencode/skills/
-```
+## What it does
 
-Skills are discovered automatically on the next OpenCode session.
+- **Find sessions** — search by title, message content, or time range via SQLite, or use built-in tools (`project_search`, `project_list`)
+- **Read conversations** — pull the full text content of any past session
+- **Jump to sessions** — open a session in a new terminal, resume or fork it
+- **Push messages** — inject context silently (`noReply`) or trigger AI work in another session via the REST API
 
 ## Requirements
 
 - [OpenCode](https://opencode.ai) v1.0+
 - `sqlite3` (for session search)
-- `curl` and `lsof` (for push-message-to-session)
+- `curl` and `lsof` (for pushing messages)
 
 ## License
 
