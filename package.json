@@ -2,5 +2,5 @@
   "name": "opencode-session-skills",
   "version": "1.0.0",
   "type": "module",
-  "main": ".opencode/plugins/session-skills.js"
+  "main": ".opencode/plugins/session-skills.ts"
 }
