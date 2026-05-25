@@ -109,10 +109,14 @@ async function openTmuxWindow(
 }
 
 // =============================================================================
-// TERMINAL — MACOS
+// TERMINAL — MACOS (AppleScript-based, runs in user's default shell)
 // =============================================================================
 
 type MacTerminal = "ghostty" | "iterm" | "kitty" | "alacritty" | "warp" | "terminal"
+
+function shellQuote(str: string): string {
+	return `'${str.replace(/'/g, "'\\''")}'`
+}
 
 function detectMacTerminal(): MacTerminal {
 	if (process.env.GHOSTTY_RESOURCES_DIR) return "ghostty"
@@ -129,111 +133,120 @@ function detectMacTerminal(): MacTerminal {
 	return "terminal"
 }
 
+function buildShellCommand(cwd: string, argv: string[]): string {
+	const cdPart = `cd ${shellQuote(cwd)}`
+	if (argv.length === 0) return cdPart
+	const cmd = argv.map((a) => shellQuote(a)).join(" ")
+	return `${cdPart} && ${cmd}`
+}
+
+function runAppleScript(script: string): TerminalResult {
+	const result = Bun.spawnSync(["osascript", "-e", script])
+	if (result.exitCode !== 0) {
+		return { success: false, error: result.stderr.toString() }
+	}
+	return { success: true }
+}
+
 async function openMacOSTerminal(cwd: string, argv: string[]): Promise<TerminalResult> {
 	const terminal = detectMacTerminal()
-	const escapedCwd = escapeBash(cwd)
-	const command = buildBashCommand(argv)
-	const scriptContent = buildScriptContent(cwd, argv)
+	const command = buildShellCommand(cwd, argv)
+	const escapedCommand = escapeAppleScript(command)
 
 	try {
 		switch (terminal) {
-			case "ghostty": {
-				const proc = Bun.spawn(
-					[
-						"open",
-						"-na",
-						"Ghostty.app",
-						"--args",
-						`--working-directory=${cwd}`,
-						"-e",
-						"bash",
-						"-c",
-						command ? `cd "${escapedCwd}" && ${command}` : `cd "${escapedCwd}"`,
-					],
-					{ detached: true, stdio: ["ignore", "ignore", "ignore"] },
-				)
-				proc.unref()
-				return { success: true }
-			}
-
 			case "iterm": {
-				const scriptPath = await writeTempScript(scriptContent)
-				const escapedPath = escapeAppleScript(scriptPath)
-				const appleScript = `
-					tell application "iTerm"
+				return runAppleScript(`
+					tell application "iTerm2"
+						activate
 						tell current window
 							create tab with default profile
+							tell current session
+								write text "${escapedCommand}"
+							end tell
 						end tell
-						activate
-						tell first session of current tab of current window
-							write text "${escapedPath}"
-						end tell
-					end tell`
-				const result = Bun.spawnSync(["osascript", "-e", appleScript])
-				if (result.exitCode !== 0) {
-					try {
-						await fs.rm(scriptPath)
-					} catch {}
-					return { success: false, error: `iTerm: ${result.stderr.toString()}` }
-				}
-				return { success: true }
+					end tell`)
 			}
 
 			case "kitty": {
-				const scriptPath = await writeTempScript(scriptContent)
+				// Try remote control first (requires allow_remote_control in kitty.conf)
 				const remote = Bun.spawnSync([
-					"kitty",
-					"@",
-					"launch",
-					"--type",
-					"tab",
-					"--cwd",
-					cwd,
-					"--",
-					"bash",
-					scriptPath,
+					"kitty", "@", "launch", "--type", "tab", "--cwd", cwd,
+					"--", "sh", "-c", `${command}; exec $SHELL`,
 				])
 				if (remote.exitCode === 0) return { success: true }
 
-				const proc = Bun.spawn(["kitty", "--directory", cwd, "-e", "bash", scriptPath], {
-					detached: true,
-					stdio: ["ignore", "ignore", "ignore"],
-				})
-				proc.unref()
-				return { success: true }
-			}
-
-			case "alacritty": {
-				const scriptPath = await writeTempScript(scriptContent)
-				const proc = Bun.spawn(
-					["alacritty", "--working-directory", cwd, "-e", "bash", scriptPath],
-					{ detached: true, stdio: ["ignore", "ignore", "ignore"] },
-				)
-				proc.unref()
-				return { success: true }
+				// Fallback: AppleScript
+				return runAppleScript(`
+					tell application "kitty"
+						activate
+					end tell
+					delay 0.3
+					tell application "System Events"
+						tell process "kitty"
+							keystroke "t" using command down
+							delay 0.3
+							keystroke "${escapedCommand}"
+							key code 36
+						end tell
+					end tell`)
 			}
 
 			case "warp": {
-				const scriptPath = await writeTempScript(scriptContent)
-				const proc = Bun.spawn(["open", "-b", "dev.warp.Warp-Stable", scriptPath], {
-					detached: true,
-					stdio: ["ignore", "ignore", "ignore"],
-				})
-				proc.unref()
-				return { success: true }
+				return runAppleScript(`
+					tell application "Warp"
+						activate
+					end tell
+					delay 0.3
+					tell application "System Events"
+						tell process "Warp"
+							keystroke "t" using command down
+							delay 0.3
+							keystroke "${escapedCommand}"
+							key code 36
+						end tell
+					end tell`)
+			}
+
+			case "ghostty": {
+				return runAppleScript(`
+					tell application "Ghostty"
+						activate
+					end tell
+					delay 0.3
+					tell application "System Events"
+						tell process "Ghostty"
+							keystroke "t" using command down
+							delay 0.3
+							keystroke "${escapedCommand}"
+							key code 36
+						end tell
+					end tell`)
+			}
+
+			case "alacritty": {
+				// Alacritty has no native tab support; open a new window
+				return runAppleScript(`
+					tell application "Alacritty"
+						activate
+					end tell
+					delay 0.3
+					tell application "System Events"
+						tell process "Alacritty"
+							keystroke "n" using command down
+							delay 0.3
+							keystroke "${escapedCommand}"
+							key code 36
+						end tell
+					end tell`)
 			}
 
 			default: {
-				const scriptPath = await writeTempScript(scriptContent)
-				const proc = Bun.spawn(["open", "-a", "Terminal", scriptPath], {
-					stdio: ["ignore", "ignore", "pipe"],
-				})
-				const exitCode = await proc.exited
-				if (exitCode !== 0) {
-					const stderr = await new Response(proc.stderr).text()
-					return { success: false, error: `Terminal.app: ${stderr}` }
-				}
-				return { success: true }
+				return runAppleScript(`
+					tell application "Terminal"
+						activate
+						do script "${escapedCommand}"
+					end tell`)
 			}
 		}
 	} catch (error) {
