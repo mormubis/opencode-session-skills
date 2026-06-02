@@ -33,7 +33,25 @@ project_jump({
 
 Omit `sessionId` to open the project fresh or let the user pick.
 
+## Bash Fallback
+
+If `project_jump()` is unavailable, use the TUI directly:
+
+```bash
+# Resume
+opencode -s <session_id> <project_path>
+
+# Fork
+opencode -s <session_id> --fork <project_path>
+```
+
+**Never use `opencode run --session`** — `run` requires a message and will fail with "You must provide a message or a command".
+
+On macOS, the terminal is detected automatically via env vars (`ITERM_SESSION_ID` → iTerm, `GHOSTTY_RESOURCES_DIR` → Ghostty, `TMUX` → tmux window). `project_jump()` handles this; the bash command above opens in the current terminal.
+
 ## Common Mistakes
+
+**Wrong CLI subcommand** — `opencode run --session <id>` fails. Use `opencode -s <id> <path>`.
 
 **Resume vs fork** — if the session might be active in another terminal, fork it. Resuming in two places causes conflicts.
 
