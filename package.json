@@ -2,5 +2,8 @@
   "name": "opencode-session-skills",
   "version": "1.0.0",
   "type": "module",
-  "main": ".opencode/plugins/session-skills.ts"
+  "main": ".opencode/plugins/session-skills.ts",
+  "dependencies": {
+    "@opencode-ai/plugin": "latest"
+  }
 }
