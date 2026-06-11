@@ -4,17 +4,18 @@
  * Provides tools for searching, listing, and jumping between
  * OpenCode sessions across all projects, along with session-related skills.
  *
- * Tools: project_search, project_list, project_sessions, project_jump
+ * Tools: project_search, project_list, project_sessions, project_jump, session_push
  * Skills: session-jump, session-push, session-db, session-recover
  */
 
 import { Database } from "bun:sqlite"
 import * as fs from "node:fs/promises"
+import { watch } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import { type Plugin, tool } from "@opencode-ai/plugin"
-import type { Project } from "@opencode-ai/sdk"
+import type { OpencodeClient, Project } from "@opencode-ai/sdk"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const OPENCODE_DB = path.join(os.homedir(), ".local", "share", "opencode", "opencode.db")
@@ -514,14 +515,102 @@ function buildLaunchArgv(
 }
 
 // =============================================================================
+// PUSH QUEUE
+// =============================================================================
+
+const PUSH_QUEUE_DIR = path.join(os.homedir(), ".local", "share", "opencode", "push-queue")
+
+interface QueuedMessage {
+	message: string
+	noReply: boolean
+}
+
+async function processQueue(sessionId: string, client: OpencodeClient): Promise<void> {
+	const queueDir = path.join(PUSH_QUEUE_DIR, sessionId)
+
+	let files: string[]
+	try {
+		files = await fs.readdir(queueDir)
+	} catch {
+		return
+	}
+
+	for (const file of files.sort()) {
+		if (!file.endsWith(".json")) continue
+		const filePath = path.join(queueDir, file)
+
+		let content: QueuedMessage
+		try {
+			const raw = await fs.readFile(filePath, "utf8")
+			await fs.unlink(filePath) // consume before processing to avoid double-delivery
+			content = JSON.parse(raw) as QueuedMessage
+		} catch {
+			continue
+		}
+
+		try {
+			await client.session.promptAsync({
+				path: { id: sessionId },
+				body: {
+					noReply: content.noReply,
+					parts: [{ type: "text", text: content.message }],
+				},
+			})
+		} catch {
+			// message consumed but delivery failed — accepted tradeoff
+		}
+	}
+}
+
+function watchSession(sessionId: string, client: OpencodeClient): void {
+	const queueDir = path.join(PUSH_QUEUE_DIR, sessionId)
+
+	fs.mkdir(queueDir, { recursive: true })
+		.then(() => {
+			// Deliver any messages that arrived while this session was inactive
+			processQueue(sessionId, client).catch(() => {})
+
+			// Watch for new messages in real-time
+			watch(queueDir, () => {
+				processQueue(sessionId, client).catch(() => {})
+			})
+		})
+		.catch(() => {})
+}
+
+// =============================================================================
 // PLUGIN
 // =============================================================================
 
-export const SessionSkillsPlugin: Plugin = async ({ client }) => {
+export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
 	let lastSearchResults: SessionMatch[] = []
 	const skillsDir = path.resolve(__dirname, "../../skills")
 
+	// Set up push queue watchers in the background — must not block plugin init
+	void (async () => {
+		try {
+			const sessionsResult = await client.session.list()
+			for (const session of sessionsResult.data ?? []) {
+				if (session.projectID === project.id) {
+					watchSession(session.id, client)
+				}
+			}
+		} catch {
+			// non-fatal — push queue won't work but everything else will
+		}
+	})()
+
 	return {
+		event: async ({ event }) => {
+			// Watch new sessions as they're created in this project
+			if (
+				event.type === "session.created" &&
+				event.properties.info.projectID === project.id
+			) {
+				watchSession(event.properties.info.id, client)
+			}
+		},
+
 		config: async (config) => {
 			config.skills = config.skills || {}
 			config.skills.paths = config.skills.paths || []
@@ -556,6 +645,37 @@ export const SessionSkillsPlugin: Plugin = async ({ client }) => {
 		},
 
 		tool: {
+			session_push: tool({
+				description:
+					"Push a message or context to any OpenCode session. Use noReply=true for silent context injection without triggering an AI response. Use noReply=false (default) to trigger the AI to respond. If the target session is active, the message is delivered in real-time via the session's own server (SSE fires, TUI updates live). If inactive, the message is queued and delivered when the session next opens. Use project_search to find the target sessionId first.",
+				args: {
+					sessionId: tool.schema
+						.string()
+						.describe("Target session ID. Use project_search to find it."),
+					message: tool.schema.string().describe("Message text to push to the session."),
+					noReply: tool.schema
+						.boolean()
+						.optional()
+						.describe(
+							"If true, injects context silently without triggering an AI response. Defaults to false.",
+						),
+				},
+				async execute(args) {
+					const queueDir = path.join(PUSH_QUEUE_DIR, args.sessionId)
+					await fs.mkdir(queueDir, { recursive: true })
+
+					const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+					const content: QueuedMessage = {
+						message: args.message,
+						noReply: args.noReply ?? false,
+					}
+					await Bun.write(path.join(queueDir, filename), JSON.stringify(content))
+
+					const mode = args.noReply ? "silent context injection" : "AI will respond"
+					return `Message queued for session ${args.sessionId} (${mode}). Delivered in real-time if session is active, otherwise on next open.`
+				},
+			}),
+
 			project_sessions: tool({
 				description:
 					"Open the native session picker showing sessions across all projects. Use when the user wants to browse and switch sessions visually.",

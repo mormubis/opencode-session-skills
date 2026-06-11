@@ -5,8 +5,6 @@ description: Use when sending a message, context, or instructions to another Ope
 
 # Push Message to Another OpenCode Session
 
-All OpenCode servers share one SQLite database. Any running server can write to any session.
-
 ## When to Use
 
 - Sending results or context to another conversation
@@ -15,61 +13,30 @@ All OpenCode servers share one SQLite database. Any running server can write to 
 
 ## Quick Reference
 
-| Mode | Endpoint | Behavior |
-|------|----------|----------|
-| Context injection | `POST /session/:id/message` + `noReply: true` | Silent, no AI response |
-| Trigger work (async) | `POST /session/:id/prompt_async` | AI responds, non-blocking |
-| Trigger work (sync) | `POST /session/:id/message` | Blocks until AI responds |
+| Mode | Tool call | Behavior |
+|------|-----------|----------|
+| Context injection | `session_push(sessionId, message, noReply=true)` | Silent, no AI response |
+| Trigger work | `session_push(sessionId, message)` | AI responds in the target session |
 
 ## Find the Target Session
 
-Use `session-recover` skill to find the session ID, or query directly using `session-db` skill.
+Use `project_search` to find sessions by keyword. It returns session IDs and titles. Copy the session ID and pass it to `session_push`.
 
-## Discover a Running Server
+```
+project_search(query="browser sdk refactor")
+→ returns list with sessionId, title, projectName
 
-```bash
-# Finds the first accessible server, skips 401 (auth-required)
-for port in $(lsof -i -P -n 2>/dev/null | grep "opencode.*LISTEN" | awk '{print $9}' | cut -d: -f2 | sort -u); do
-  code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 "http://127.0.0.1:$port/global/health" 2>/dev/null)
-  if [ "$code" = "200" ]; then OC_PORT=$port; break; fi
-done
+session_push(sessionId="abc123...", message="Context from another session...")
 ```
 
-## Push the Message
+## How real-time delivery works
 
-### Context injection (no AI response)
+Each plugin instance watches a file-based push queue for its sessions (`~/.local/share/opencode/push-queue/{sessionId}/`). When `session_push` writes a message file, the target session's own plugin picks it up via `fs.watch` and calls `client.session.promptAsync()` through the correct server — the same one the TUI is subscribed to. That server fires the SSE event and the TUI updates live.
 
-```bash
-curl -s -X POST "http://127.0.0.1:$OC_PORT/session/$SESSION_ID/message" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "noReply": true,
-    "parts": [{"type": "text", "text": "Context from another session..."}]
-  }'
-```
-
-### Trigger work (AI responds)
-
-```bash
-curl -s -X POST "http://127.0.0.1:$OC_PORT/session/$SESSION_ID/prompt_async" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "parts": [{"type": "text", "text": "Please do X based on the context above."}]
-  }'
-```
-
-Omit `noReply` and use `/session/:id/message` for the synchronous variant.
-
-## Limitations
-
-**Pushed messages don't appear in real-time.** The event bus is per-process and in-memory. The message writes to SQLite, but the TUI never receives the SSE event. Users see pushed messages when they re-enter the session. [Known limitation](https://github.com/anomalyco/opencode/issues/2403).
-
-**Auth-protected servers.** If `OPENCODE_SERVER_PASSWORD` is set, the server requires HTTP Basic Auth (`opencode:<password>`). The discovery loop skips these.
+If the target session is inactive (not open in any terminal), the message file stays in the queue and is delivered the next time that session is opened.
 
 ## Common Mistakes
 
-**Pushing to the wrong session** — verify first: `curl -s "http://127.0.0.1:$OC_PORT/session/$SESSION_ID" | python3 -c "import sys,json; print(json.load(sys.stdin)['title'])"`.
+**Pushing to the wrong session** — use `project_search` first and verify the title before pushing.
 
-**Server not found** — no OpenCode instance running. Start one with `opencode serve`.
-
-**Session is actively running** — messages are queued. Timing matters with `prompt_async`.
+**Session is actively running** — messages are queued. If the target session is in the middle of a task, the push will be processed after the current task completes.
