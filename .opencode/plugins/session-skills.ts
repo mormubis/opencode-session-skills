@@ -502,6 +502,7 @@ function buildLaunchArgv(
 	projectPath: string,
 	sessionId?: string,
 	mode?: "resume" | "fork",
+	prompt?: string,
 ): string[] {
 	const argv = ["opencode"]
 	if (sessionId) {
@@ -509,6 +510,9 @@ function buildLaunchArgv(
 		if (mode === "fork") {
 			argv.push("--fork")
 		}
+	}
+	if (prompt) {
+		argv.push("--prompt", prompt)
 	}
 	argv.push(projectPath)
 	return argv
@@ -749,9 +753,15 @@ export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
 						.describe(
 							"Pick number from the last search results (1-based). Resolves projectPath and sessionId from cache.",
 						),
+					prompt: tool.schema
+						.string()
+						.optional()
+						.describe(
+							"Prompt to send as the first message when opening the session.",
+						),
 				},
 				async execute(args) {
-					let { projectPath, sessionId, mode } = args
+					let { projectPath, sessionId, mode, prompt } = args
 
 					if (args.pick != null) {
 						const index = args.pick - 1
@@ -767,7 +777,7 @@ export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
 						return "Missing projectPath. Provide a path or a pick number."
 					}
 
-					const launchArgv = buildLaunchArgv(projectPath, sessionId, mode ?? "resume")
+					const launchArgv = buildLaunchArgv(projectPath, sessionId, mode ?? "resume", prompt)
 					const windowName = path.basename(projectPath)
 					const result = await openTerminal(projectPath, launchArgv, windowName)
 
