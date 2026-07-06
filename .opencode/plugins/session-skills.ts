@@ -498,6 +498,18 @@ function buildQuestionOptions(
 	})
 }
 
+const PROMPT_FILE_THRESHOLD = 500
+
+async function resolvePrompt(prompt?: string): Promise<string | undefined> {
+	if (!prompt || prompt.length <= PROMPT_FILE_THRESHOLD) return prompt
+	const promptPath = path.join(
+		os.tmpdir(),
+		`opencode-prompt-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`,
+	)
+	await Bun.write(promptPath, prompt)
+	return `Read the file at ${promptPath} and follow the instructions in it. Delete the file after reading.`
+}
+
 function buildLaunchArgv(
 	projectPath: string,
 	sessionId?: string,
@@ -777,7 +789,8 @@ export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
 						return "Missing projectPath. Provide a path or a pick number."
 					}
 
-					const launchArgv = buildLaunchArgv(projectPath, sessionId, mode ?? "resume", prompt)
+					const resolvedPrompt = await resolvePrompt(prompt)
+					const launchArgv = buildLaunchArgv(projectPath, sessionId, mode ?? "resume", resolvedPrompt)
 					const windowName = path.basename(projectPath)
 					const result = await openTerminal(projectPath, launchArgv, windowName)
 
