@@ -9,7 +9,7 @@ Agent skills for managing OpenCode sessions. Find past conversations, push messa
 | `session-db` | Shared reference for the OpenCode SQLite schema and common queries |
 | `session-recover` | Search and read past OpenCode conversations |
 | `session-push` | Send messages or context to another session via REST API |
-| `session-jump` | Open another session in a new terminal (resume or fork) |
+| `session-jump` | Open another session in a new terminal or Herdr workspace (resume or fork) |
 
 ## Install
 

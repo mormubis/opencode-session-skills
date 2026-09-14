@@ -339,6 +339,48 @@ async function openWindowsTerminal(cwd: string, argv: string[]): Promise<Termina
 }
 
 // =============================================================================
+// TERMINAL — HERDR
+// =============================================================================
+
+// Herdr (https://herdr.dev) manages its own workspaces/tabs/panes on top of
+// whatever terminal it's running in. When present, prefer its socket API over
+// faking keystrokes into the underlying terminal — that keeps the new pane
+// inside Herdr's layout instead of spawning an untracked tab next to it.
+async function openHerdrWorkspace(
+	cwd: string,
+	argv: string[],
+	label?: string,
+): Promise<TerminalResult> {
+	const createArgs = ["herdr", "workspace", "create", "--cwd", cwd, "--focus"]
+	if (label) createArgs.push("--label", label)
+
+	const created = Bun.spawnSync(createArgs)
+	if (created.exitCode !== 0) {
+		return { success: false, error: `herdr workspace create: ${created.stderr.toString()}` }
+	}
+
+	let paneId: string
+	try {
+		paneId = JSON.parse(created.stdout.toString()).result.root_pane.pane_id
+	} catch {
+		return {
+			success: false,
+			error: `herdr workspace create: could not read pane_id from response: ${created.stdout.toString()}`,
+		}
+	}
+
+	if (argv.length === 0) return { success: true }
+
+	// pane run sends command text + Enter into the pane's shell, so build one
+	// already-quoted line rather than trusting herdr to re-escape each arg.
+	const run = Bun.spawnSync(["herdr", "pane", "run", paneId, buildShellCommand(cwd, argv)])
+	if (run.exitCode !== 0) {
+		return { success: false, error: `herdr pane run: ${run.stderr.toString()}` }
+	}
+	return { success: true }
+}
+
+// =============================================================================
 // TERMINAL — UNIFIED ENTRY POINT
 // =============================================================================
 
@@ -348,6 +390,10 @@ async function openTerminal(
 	windowName?: string,
 ): Promise<TerminalResult> {
 	const normalizedArgv = argv ?? []
+
+	if (process.env.HERDR_ENV === "1") {
+		return openHerdrWorkspace(cwd, normalizedArgv, windowName)
+	}
 
 	if (process.env.TMUX) {
 		return openTmuxWindow(cwd, normalizedArgv, windowName)
@@ -771,9 +817,15 @@ export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
 						.describe(
 							"Prompt to send as the first message when opening the session.",
 						),
+					closeCurrent: tool.schema
+						.boolean()
+						.optional()
+						.describe(
+							"Close the current session after the new terminal opens successfully. Defaults to false.",
+						),
 				},
 				async execute(args) {
-					let { projectPath, sessionId, mode, prompt } = args
+					let { projectPath, sessionId, mode, prompt, closeCurrent } = args
 
 					if (args.pick != null) {
 						const index = args.pick - 1
@@ -793,9 +845,10 @@ export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
 					const launchArgv = buildLaunchArgv(projectPath, sessionId, mode ?? "resume", resolvedPrompt)
 					const windowName = path.basename(projectPath)
 					const result = await openTerminal(projectPath, launchArgv, windowName)
+					const destination = process.env.HERDR_ENV === "1" ? "Herdr workspace" : "terminal"
 
 					if (!result.success) {
-						return `Failed to open terminal: ${result.error ?? "unknown error"}`
+						return `Failed to open ${destination}: ${result.error ?? "unknown error"}`
 					}
 
 					const modeLabel = sessionId
@@ -804,7 +857,12 @@ export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
 							: "resuming"
 						: "new session"
 
-					return `Opened ${windowName} in a new terminal (${modeLabel}).`
+					if (closeCurrent) {
+						await client.tui.executeCommand({ body: { command: "exit" } })
+						return `Opened ${windowName} in a new ${destination} (${modeLabel}) and closed this session.`
+					}
+
+					return `Opened ${windowName} in a new ${destination} (${modeLabel}).`
 				},
 			}),
 		},

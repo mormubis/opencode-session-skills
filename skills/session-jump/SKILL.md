@@ -1,6 +1,6 @@
 ---
 name: session-jump
-description: Use when switching to a different OpenCode conversation, opening a past session in a new terminal, or resuming or forking a session from another project.
+description: Use when switching to a different OpenCode conversation, opening a past session in a new terminal or Herdr workspace, or resuming or forking a session from another project.
 ---
 
 # Jump to Another OpenCode Conversation
@@ -33,6 +33,21 @@ project_jump({
 
 Omit `sessionId` to open the project fresh or let the user pick.
 
+## Closing the Current Session
+
+Pass `closeCurrent: true` to exit the current session right after the new terminal opens successfully:
+
+```
+project_jump({
+  projectPath: "/path/to/project",
+  sessionId: "ses_abc123",
+  mode: "resume",
+  closeCurrent: true
+})
+```
+
+Only exits on success — if the terminal fails to open, the current session stays open.
+
 ## Bash Fallback
 
 If `project_jump()` is unavailable, use the TUI directly:
@@ -47,7 +62,7 @@ opencode -s <session_id> --fork <project_path>
 
 **Never use `opencode run --session`** — `run` requires a message and will fail with "You must provide a message or a command".
 
-On macOS, the terminal is detected automatically via env vars (`ITERM_SESSION_ID` → iTerm, `GHOSTTY_RESOURCES_DIR` → Ghostty, `TMUX` → tmux window). `project_jump()` handles this; the bash command above opens in the current terminal.
+The destination is detected automatically from the environment, checked in this order: `HERDR_ENV=1` → new Herdr workspace (via `herdr workspace create` + `herdr pane run`, focused, labeled with the project name), `TMUX` → tmux window, macOS → terminal app detected via env vars (`ITERM_SESSION_ID` → iTerm, `GHOSTTY_RESOURCES_DIR` → Ghostty). `project_jump()` handles this; the bash command above opens in the current terminal.
 
 ## Common Mistakes
 
