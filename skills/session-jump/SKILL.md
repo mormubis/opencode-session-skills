@@ -33,6 +33,18 @@ project_jump({
 
 Omit `sessionId` to open the project fresh or let the user pick.
 
+## Jumping to a Brand-New Directory (e.g. a Worktree)
+
+`projectPath` doesn't need to be a project OpenCode has opened before. If another conversation just created a worktree, jump straight to it — no `project_list()` or `project_search()` needed:
+
+```
+project_jump({
+  projectPath: "/path/to/new-worktree"
+})
+```
+
+Omit `sessionId` since there's no existing session yet. OpenCode registers the directory as a new project on launch.
+
 ## Closing the Current Session
 
 Pass `closeCurrent: true` to exit the current session right after the new terminal opens successfully:
@@ -70,4 +82,4 @@ The destination is detected automatically from the environment, checked in this 
 
 **Resume vs fork** — if the session might be active in another terminal, fork it. Resuming in two places causes conflicts.
 
-**Wrong project path** — must point to an actual project directory. Use `project_list()` to discover valid paths.
+**Wrong project path** — `projectPath` just needs to be a real directory on disk; it does not need to be a project OpenCode already knows about. `project_list()` only shows previously-opened projects, so a brand-new directory (e.g. a worktree you just created) won't appear there — that's expected. Skip `project_list()` for those and pass the path directly; OpenCode registers it as a new project on launch.
