@@ -561,6 +561,7 @@ function buildLaunchArgv(
 	sessionId?: string,
 	mode?: "resume" | "fork",
 	prompt?: string,
+	agent?: string,
 ): string[] {
 	const argv = ["opencode"]
 	if (sessionId) {
@@ -571,6 +572,9 @@ function buildLaunchArgv(
 	}
 	if (prompt) {
 		argv.push("--prompt", prompt)
+	}
+	if (agent) {
+		argv.push("--agent", agent)
 	}
 	argv.push(projectPath)
 	return argv
@@ -790,7 +794,7 @@ export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
 
 			project_jump: tool({
 				description:
-					"Open a new terminal with OpenCode at a specific project, optionally resuming or forking an existing session. The user should choose the mode (resume or fork) before calling this tool.",
+					"Open a new terminal with OpenCode at a specific project, optionally resuming or forking an existing session, and optionally starting in a specific agent (e.g. build or plan — the same Build/Plan mode shown in the TUI). The user should choose the mode (resume or fork) before calling this tool.",
 				args: {
 					projectPath: tool.schema
 						.string()
@@ -804,6 +808,12 @@ export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
 						.optional()
 						.describe(
 							"Whether to resume the session in-place or fork a copy. Defaults to resume.",
+						),
+					agent: tool.schema
+						.string()
+						.optional()
+						.describe(
+							"OpenCode agent name to start the session with, e.g. build or plan (or a custom agent from config) — the same Build/Plan mode shown in the TUI, cycled with Tab. This is an agent name, not a model ID. Omit to use the project's default_agent.",
 						),
 					pick: tool.schema
 						.number()
@@ -825,7 +835,7 @@ export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
 						),
 				},
 				async execute(args) {
-					let { projectPath, sessionId, mode, prompt, closeCurrent } = args
+					let { projectPath, sessionId, mode, prompt, closeCurrent, agent } = args
 
 					if (args.pick != null) {
 						const index = args.pick - 1
@@ -842,7 +852,7 @@ export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
 					}
 
 					const resolvedPrompt = await resolvePrompt(prompt)
-					const launchArgv = buildLaunchArgv(projectPath, sessionId, mode ?? "resume", resolvedPrompt)
+					const launchArgv = buildLaunchArgv(projectPath, sessionId, mode ?? "resume", resolvedPrompt, agent)
 					const windowName = path.basename(projectPath)
 					const result = await openTerminal(projectPath, launchArgv, windowName)
 					const destination = process.env.HERDR_ENV === "1" ? "Herdr workspace" : "terminal"
