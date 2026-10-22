@@ -258,3 +258,9 @@ Content edits only. IDs and directory names stay.
 - A session created or forked by `project_jump` isn't cleaned up if the terminal fails to open.
 - `/jump` with no arguments asks the user what to search for.
 - Tests run through `BUN_BE_BUN=1 opencode test`.
+
+## Spike results
+
+- Cross-project writes: works. Create (with `agent` and `location.directory` of another project), `POST /agent` and `POST /prompt` all succeeded against a session in `opencode-kagi-search`. Caveat: the queued prompt (`delivery: "queue"`, `resume: false`) returned a `user` message but it did not appear in `GET /api/session/$ID/message` 10 seconds later. That list only held the `agent-switched` entry, so no `user` and no `assistant`. It may be pending until a turn runs, which `session_push` needs to account for.
+- TUI shows a session's stored agent: yes (Adrian opened the session with `opencode -s $ID <dir>` and the indicator showed Plan).
+- Fork: `data.location.directory` equals the source's (the kagi path). `data.parentID` is not set (`null`). The link is in `data.fork.sessionID` (equals the source id), with `data.fork.boundary` `{type: "through", messageID: <source's last listed message>}`.
