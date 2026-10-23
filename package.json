@@ -1,9 +1,15 @@
 {
   "name": "opencode-session-skills",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "main": ".opencode/plugins/session-skills.ts",
-  "dependencies": {
-    "@opencode-ai/plugin": "latest"
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "BUN_BE_BUN=1 opencode test"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "^2.1.2",
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
   }
 }

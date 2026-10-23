@@ -1,21 +1,21 @@
 /**
- * Session Skills Plugin for OpenCode
+ * Session Skills Plugin for OpenCode (V2)
  *
  * Provides tools for searching, listing, and jumping between
- * OpenCode sessions across all projects, along with session-related skills.
+ * OpenCode sessions across all projects, a /jump command, and
+ * session-related skills.
  *
- * Tools: project_search, project_list, project_sessions, project_jump, session_push
+ * Tools: project_search, project_list, project_jump, session_push
+ * Command: /jump
  * Skills: session-jump, session-push, session-db, session-recover
  */
 
 import { Database } from "bun:sqlite"
 import * as fs from "node:fs/promises"
-import { watch } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
-import { type Plugin, tool } from "@opencode-ai/plugin"
-import type { OpencodeClient, Project } from "@opencode-ai/sdk"
+import type { Plugin } from "@opencode/plugin"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const OPENCODE_DB = path.join(os.homedir(), ".local", "share", "opencode", "opencode.db")
@@ -581,302 +581,74 @@ function buildLaunchArgv(
 }
 
 // =============================================================================
-// PUSH QUEUE
-// =============================================================================
-
-const PUSH_QUEUE_DIR = path.join(os.homedir(), ".local", "share", "opencode", "push-queue")
-
-interface QueuedMessage {
-	message: string
-	noReply: boolean
-}
-
-async function processQueue(sessionId: string, client: OpencodeClient): Promise<void> {
-	const queueDir = path.join(PUSH_QUEUE_DIR, sessionId)
-
-	let files: string[]
-	try {
-		files = await fs.readdir(queueDir)
-	} catch {
-		return
-	}
-
-	for (const file of files.sort()) {
-		if (!file.endsWith(".json")) continue
-		const filePath = path.join(queueDir, file)
-
-		let content: QueuedMessage
-		try {
-			const raw = await fs.readFile(filePath, "utf8")
-			await fs.unlink(filePath) // consume before processing to avoid double-delivery
-			content = JSON.parse(raw) as QueuedMessage
-		} catch {
-			continue
-		}
-
-		try {
-			await client.session.promptAsync({
-				path: { id: sessionId },
-				body: {
-					noReply: content.noReply,
-					parts: [{ type: "text", text: content.message }],
-				},
-			})
-		} catch {
-			// message consumed but delivery failed — accepted tradeoff
-		}
-	}
-}
-
-function watchSession(sessionId: string, client: OpencodeClient): void {
-	const queueDir = path.join(PUSH_QUEUE_DIR, sessionId)
-
-	fs.mkdir(queueDir, { recursive: true })
-		.then(() => {
-			// Deliver any messages that arrived while this session was inactive
-			processQueue(sessionId, client).catch(() => {})
-
-			// Watch for new messages in real-time
-			watch(queueDir, () => {
-				processQueue(sessionId, client).catch(() => {})
-			})
-		})
-		.catch(() => {})
-}
-
-// =============================================================================
 // PLUGIN
 // =============================================================================
 
-export const SessionSkillsPlugin: Plugin = async ({ client, project }) => {
-	let lastSearchResults: SessionMatch[] = []
-	const skillsDir = path.resolve(__dirname, "../../skills")
+export const SKILLS_DIR = path.resolve(__dirname, "../../skills")
 
-	// Set up push queue watchers in the background — must not block plugin init
-	void (async () => {
-		try {
-			const sessionsResult = await client.session.list()
-			for (const session of sessionsResult.data ?? []) {
-				if (session.projectID === project.id) {
-					watchSession(session.id, client)
-				}
-			}
-		} catch {
-			// non-fatal — push queue won't work but everything else will
-		}
-	})()
-
-	return {
-		event: async ({ event }) => {
-			// Watch new sessions as they're created in this project
-			if (
-				event.type === "session.created" &&
-				event.properties.info.projectID === project.id
-			) {
-				watchSession(event.properties.info.id, client)
-			}
-		},
-
-		config: async (config) => {
-			config.skills = config.skills || {}
-			config.skills.paths = config.skills.paths || []
-			if (!config.skills.paths.includes(skillsDir)) {
-				config.skills.paths.push(skillsDir)
-			}
-		},
-
-		"command.execute.before": async (input, output) => {
-			if (input.command !== "jump") return
-			if (!input.arguments.trim()) return
-
-			const query = input.arguments.trim()
-			const matches = searchSessions(query, input.sessionID)
-			lastSearchResults = matches
-
-			if (matches.length === 0) {
-				output.parts.length = 0
-				output.parts.push({
-					type: "text",
-					text: `No conversations found matching "${query}".`,
-				})
-				return
-			}
-
-			const options = buildQuestionOptions(matches)
-			output.parts.length = 0
-			output.parts.push({
-				type: "text",
-				text: `Search results for "${query}" are ready (${matches.length} found). Use the question tool to ask the user which conversation to jump to. Use these options:\n${JSON.stringify(options)}\n\nAfter they pick, ask resume or fork with a second question. Then call project_jump with pick=N and the chosen mode.`,
-			})
-		},
-
-		tool: {
-			session_push: tool({
-				description:
-					"Push a message or context to any OpenCode session. Use noReply=true for silent context injection without triggering an AI response. Use noReply=false (default) to trigger the AI to respond. If the target session is active, the message is delivered in real-time via the session's own server (SSE fires, TUI updates live). If inactive, the message is queued and delivered when the session next opens. Use project_search to find the target sessionId first.",
-				args: {
-					sessionId: tool.schema
-						.string()
-						.describe("Target session ID. Use project_search to find it."),
-					message: tool.schema.string().describe("Message text to push to the session."),
-					noReply: tool.schema
-						.boolean()
-						.optional()
-						.describe(
-							"If true, injects context silently without triggering an AI response. Defaults to false.",
-						),
-				},
-				async execute(args) {
-					const queueDir = path.join(PUSH_QUEUE_DIR, args.sessionId)
-					await fs.mkdir(queueDir, { recursive: true })
-
-					const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.json`
-					const content: QueuedMessage = {
-						message: args.message,
-						noReply: args.noReply ?? false,
-					}
-					await Bun.write(path.join(queueDir, filename), JSON.stringify(content))
-
-					const mode = args.noReply ? "silent context injection" : "AI will respond"
-					return `Message queued for session ${args.sessionId} (${mode}). Delivered in real-time if session is active, otherwise on next open.`
-				},
-			}),
-
-			project_sessions: tool({
-				description:
-					"Open the native session picker showing sessions across all projects. Use when the user wants to browse and switch sessions visually.",
-				args: {},
-				async execute() {
-					await client.tui.openSessions({})
-					return "Session picker opened."
-				},
-			}),
-
-			project_list: tool({
-				description:
-					"List all known OpenCode projects and their recent sessions. Use this to discover which projects and conversations exist across your workspace.",
-				args: {},
-				async execute() {
-					const projectsResponse = await client.project.list()
-					const projects = (projectsResponse.data ?? []) as Project[]
-
-					if (projects.length === 0) return "No projects found."
-
-					const lines: string[] = ["# Projects\n"]
-					for (const project of projects) {
-						const name = projectDisplayName(project.worktree)
-						lines.push(`- **${name}** — \`${project.worktree}\``)
-					}
-					return lines.join("\n")
-				},
-			}),
-
-			project_search: tool({
-				description:
-					"Search conversations across ALL OpenCode projects by keyword. Returns matching sessions with excerpts. Use this when the user types /jump <query> or asks to find a conversation.",
-				args: {
-					query: tool.schema
-						.string()
-						.describe("Keyword to search for in session titles and message content"),
-				},
-				async execute(args, context) {
-					const matches = searchSessions(args.query, context.sessionID)
-					lastSearchResults = matches
-
-					if (matches.length === 0) {
-						return `No conversations found matching "${args.query}".`
-					}
-
-					const options = buildQuestionOptions(matches)
-					return `${JSON.stringify(options)}\n\nResults are cached. Call project_jump with pick=N and mode to open the user's choice.`
-				},
-			}),
-
-			project_jump: tool({
-				description:
-					"Open a new terminal with OpenCode at a specific project, optionally resuming or forking an existing session, and optionally starting in a specific agent (e.g. build or plan — the same Build/Plan mode shown in the TUI). The user should choose the mode (resume or fork) before calling this tool.",
-				args: {
-					projectPath: tool.schema
-						.string()
-						.describe("Absolute path to the project directory"),
-					sessionId: tool.schema
-						.string()
-						.optional()
-						.describe("Session ID to resume or fork. Omit to start a new session."),
-					mode: tool.schema
-						.enum(["resume", "fork"])
-						.optional()
-						.describe(
-							"Whether to resume the session in-place or fork a copy. Defaults to resume.",
-						),
-					agent: tool.schema
-						.string()
-						.optional()
-						.describe(
-							"OpenCode agent name to start the session with, e.g. build or plan (or a custom agent from config) — the same Build/Plan mode shown in the TUI, cycled with Tab. This is an agent name, not a model ID. Omit to use the project's default_agent.",
-						),
-					pick: tool.schema
-						.number()
-						.optional()
-						.describe(
-							"Pick number from the last search results (1-based). Resolves projectPath and sessionId from cache.",
-						),
-					prompt: tool.schema
-						.string()
-						.optional()
-						.describe(
-							"Prompt to send as the first message when opening the session.",
-						),
-					closeCurrent: tool.schema
-						.boolean()
-						.optional()
-						.describe(
-							"Close the current session after the new terminal opens successfully. Defaults to false.",
-						),
-				},
-				async execute(args) {
-					let { projectPath, sessionId, mode, prompt, closeCurrent, agent } = args
-
-					if (args.pick != null) {
-						const index = args.pick - 1
-						if (index < 0 || index >= lastSearchResults.length) {
-							return `Invalid pick: ${args.pick}. Last search had ${lastSearchResults.length} results.`
-						}
-						const match = lastSearchResults[index]
-						projectPath = match.projectPath
-						sessionId = match.sessionId
-					}
-
-					if (!projectPath) {
-						return "Missing projectPath. Provide a path or a pick number."
-					}
-
-					const resolvedPrompt = await resolvePrompt(prompt)
-					const launchArgv = buildLaunchArgv(projectPath, sessionId, mode ?? "resume", resolvedPrompt, agent)
-					const windowName = path.basename(projectPath)
-					const result = await openTerminal(projectPath, launchArgv, windowName)
-					const destination = process.env.HERDR_ENV === "1" ? "Herdr workspace" : "terminal"
-
-					if (!result.success) {
-						return `Failed to open ${destination}: ${result.error ?? "unknown error"}`
-					}
-
-					const modeLabel = sessionId
-						? mode === "fork"
-							? "forking"
-							: "resuming"
-						: "new session"
-
-					if (closeCurrent) {
-						await client.tui.executeCommand({ body: { command: "exit" } })
-						return `Opened ${windowName} in a new ${destination} (${modeLabel}) and closed this session.`
-					}
-
-					return `Opened ${windowName} in a new ${destination} (${modeLabel}).`
-				},
-			}),
-		},
+export function parseFrontmatter(raw: string): { data: Record<string, string>; body: string } {
+	const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/)
+	if (!match) return { data: {}, body: raw }
+	const data: Record<string, string> = {}
+	// shortcut: single-line frontmatter values only, switch to a YAML parser if a skill needs multi-line values
+	for (const line of match[1].split(/\r?\n/)) {
+		const colon = line.indexOf(":")
+		if (colon === -1) continue
+		data[line.slice(0, colon).trim()] = line.slice(colon + 1).trim()
 	}
+	return { data, body: raw.slice(match[0].length) }
 }
 
-export default SessionSkillsPlugin
+export interface SkillEntry {
+	id: string
+	name: string
+	description?: string
+	path: string
+	content: string
+}
+
+export async function loadSkills(skillsDir: string): Promise<SkillEntry[]> {
+	const entries = await fs.readdir(skillsDir, { withFileTypes: true })
+	const skills: SkillEntry[] = []
+	for (const entry of entries) {
+		if (!entry.isDirectory() || entry.name.startsWith(".")) continue
+		const skillPath = path.join(skillsDir, entry.name, "SKILL.md")
+		let raw: string
+		try {
+			raw = await fs.readFile(skillPath, "utf8")
+		} catch {
+			continue
+		}
+		const { data, body } = parseFrontmatter(raw)
+		skills.push({
+			id: entry.name,
+			name: data.name || entry.name,
+			...(data.description ? { description: data.description } : {}),
+			path: skillPath,
+			content: body,
+		})
+	}
+	return skills
+}
+
+export default {
+	id: "opencode-session-skills",
+	async setup(ctx) {
+		let skills: SkillEntry[] = []
+		try {
+			skills = await loadSkills(SKILLS_DIR)
+		} catch (error) {
+			console.error("opencode-session-skills: failed to load skills", error)
+		}
+
+		await ctx.skill.transform((editor) => {
+			for (const skill of skills) {
+				try {
+					editor.add(skill as Parameters<typeof editor.add>[0])
+				} catch (error) {
+					console.error(`opencode-session-skills: failed to add skill ${skill.id}`, error)
+				}
+			}
+		})
+	},
+} satisfies Plugin.Plugin
