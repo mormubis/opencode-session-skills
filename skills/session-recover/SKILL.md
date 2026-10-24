@@ -23,8 +23,7 @@ Use `project_search` first. Fall back to SQLite (via `session-db` skill) when yo
 
 ```
 project_search({ query: "keyword" })   # Search across all projects
-project_list()                          # Browse projects and recent sessions
-project_sessions()                      # Interactive session picker UI
+project_list()                          # List known projects
 ```
 
 ### SQLite
@@ -33,17 +32,10 @@ See `session-db` skill for all queries — search by title, message content, or 
 
 ## Read Conversation Content
 
-```sql
-SELECT json_extract(p.data, '$.text')
-FROM part p
-JOIN message m ON p.message_id = m.id
-WHERE m.session_id = 'SESSION_ID'
-  AND json_extract(p.data, '$.type') = 'text'
-ORDER BY p.time_created;
-```
+Use the "Read conversation content" query from the `session-db` skill, which includes assistant text.
 
 ## Common Mistakes
 
 **Wrong session identified** — verify session content before summarizing. Title alone is not reliable.
 
-**Forked sessions share history** — a forked session has the same early messages as the original. Check `time_created` to confirm you have the right one.
+**Forked sessions share history** — a forked session has the same early messages as the original, and `session_v2.fork_session_id` points at its source. Check `time_created` to confirm you have the right one.

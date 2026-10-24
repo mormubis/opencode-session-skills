@@ -11,6 +11,7 @@
  */
 
 import { Database } from "bun:sqlite"
+import { existsSync } from "node:fs"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -18,7 +19,7 @@ import { fileURLToPath } from "node:url"
 import type { Plugin } from "@opencode/plugin"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const OPENCODE_DB = path.join(os.homedir(), ".local", "share", "opencode", "opencode.db")
+export const OPENCODE_DB = path.join(os.homedir(), ".local", "share", "opencode", "opencode.db")
 
 // =============================================================================
 // SHELL ESCAPING
@@ -415,9 +416,8 @@ async function openTerminal(
 // SESSION SEARCH
 // =============================================================================
 
-interface SessionMatch {
+export interface SessionMatch {
 	sessionId: string
-	projectId: string
 	title: string
 	timeUpdated: number
 	excerpt: string
@@ -425,82 +425,94 @@ interface SessionMatch {
 	projectName: string
 }
 
-function searchSessions(
+export function searchSessions(
+	dbPath: string,
 	keyword: string,
 	excludeSessionId?: string,
 	limit = 10,
 ): SessionMatch[] {
-	const db = new Database(OPENCODE_DB, { readonly: true })
+	const db = new Database(dbPath, { readonly: true })
 
 	try {
 		const lowerKeyword = `%${keyword.toLowerCase()}%`
 
+		// shortcut: bun:sqlite is synchronous, so a search blocks the shared service (~0.4s warm, ~3s cold on a 12 GB DB). Move it to a Bun Worker if that gets noticeable.
 		const rows = db
 			.query<
 				{
 					session_id: string
-					project_id: string
-					title: string
+					title: string | null
 					time_updated: number
+					directory: string
+					project_root: string | null
 					excerpt: string | null
-					worktree: string
 				},
-				[string, number]
+				[string, number, string | null]
 			>(
 				`
 			SELECT
-				s.id as session_id,
-				s.project_id,
+				s.id AS session_id,
 				s.title,
 				s.time_updated,
-				pr.worktree,
+				s.directory,
+				p.worktree AS project_root,
 				(
-					SELECT substr(json_extract(p.data, '$.text'), 1, 200)
-					FROM part p
-					JOIN message m ON p.message_id = m.id
+					SELECT substr(json_extract(m.data, '$.text'), 1, 200)
+					FROM session_message m
 					WHERE m.session_id = s.id
-						AND json_extract(p.data, '$.type') = 'text'
-						AND json_extract(p.data, '$.text') IS NOT NULL
-						AND length(json_extract(p.data, '$.text')) > 20
-						AND lower(json_extract(p.data, '$.text')) LIKE ?1
-						AND json_extract(m.data, '$.role') = 'user'
-						AND json_extract(p.data, '$.text') NOT LIKE 'Use the %tool%'
-						AND json_extract(p.data, '$.text') NOT LIKE 'The user searched%'
-						AND json_extract(p.data, '$.text') NOT LIKE 'Search results for%'
-					ORDER BY p.time_created ASC
+						AND m.type = 'user'
+						AND length(json_extract(m.data, '$.text')) > 20
+						AND lower(json_extract(m.data, '$.text')) LIKE ?1
+						AND json_extract(m.data, '$.text') NOT LIKE 'Use the %tool%'
+						AND json_extract(m.data, '$.text') NOT LIKE 'The user searched%'
+						AND json_extract(m.data, '$.text') NOT LIKE 'Search results for%'
+					ORDER BY m.seq
 					LIMIT 1
-				) as excerpt
-			FROM session s
-			JOIN project pr ON s.project_id = pr.id
+				) AS excerpt
+			FROM session_v2 s
+			LEFT JOIN project p ON p.id = s.project_id
 			WHERE s.parent_id IS NULL
-				AND s.title NOT LIKE '%(@% subagent)%'
+				AND s.id IS NOT ?3
 				AND (
 					lower(s.title) LIKE ?1
 					OR s.id IN (
-						SELECT DISTINCT m.session_id
-						FROM part p
-						JOIN message m ON p.message_id = m.id
-						WHERE json_extract(p.data, '$.type') = 'text'
-							AND lower(json_extract(p.data, '$.text')) LIKE ?1
+						SELECT m.session_id
+						FROM session_message m
+						WHERE m.type IN ('user', 'synthetic')
+							AND lower(json_extract(m.data, '$.text')) LIKE ?1
 					)
 				)
 			ORDER BY s.time_updated DESC
 			LIMIT ?2
 			`,
 			)
-			.all(lowerKeyword, limit)
+			.all(lowerKeyword, limit, excludeSessionId ?? null)
 
-		return rows
-			.filter((row) => row.session_id !== excludeSessionId)
-			.map((row) => ({
+		return rows.map((row) => {
+			const projectPath = existsSync(row.directory) ? row.directory : (row.project_root ?? row.directory)
+			return {
 				sessionId: row.session_id,
-				projectId: row.project_id,
-				title: row.title,
+				title: row.title ?? "",
 				timeUpdated: row.time_updated,
 				excerpt: row.excerpt ?? "",
-				projectPath: row.worktree,
-				projectName: projectDisplayName(row.worktree),
-			}))
+				projectPath,
+				projectName: projectDisplayName(projectPath),
+			}
+		})
+	} finally {
+		db.close()
+	}
+}
+
+export function listProjects(dbPath: string): string[] {
+	const db = new Database(dbPath, { readonly: true })
+	try {
+		return db
+			.query<{ worktree: string }, []>(
+				"SELECT worktree FROM project WHERE time_archived IS NULL ORDER BY time_active DESC",
+			)
+			.all()
+			.map((row) => row.worktree)
 	} finally {
 		db.close()
 	}
@@ -641,14 +653,74 @@ export default {
 			console.error("opencode-session-skills: failed to load skills", error)
 		}
 
-		await ctx.skill.transform((editor) => {
-			for (const skill of skills) {
-				try {
-					editor.add(skill as Parameters<typeof editor.add>[0])
-				} catch (error) {
-					console.error(`opencode-session-skills: failed to add skill ${skill.id}`, error)
+		try {
+			await ctx.skill.transform((editor) => {
+				for (const skill of skills) {
+					try {
+						editor.add(skill as Parameters<typeof editor.add>[0])
+					} catch (error) {
+						console.error(`opencode-session-skills: failed to add skill ${skill.id}`, error)
+					}
 				}
-			}
-		})
+			})
+		} catch (error) {
+			console.error("opencode-session-skills: failed to register skills", error)
+		}
+
+		let lastSearchResults: SessionMatch[] = []
+
+		try {
+			await ctx.tool.transform((editor) => {
+				editor.add({
+					name: "project_search",
+					description:
+						"Search conversations across ALL OpenCode projects by keyword, matching session titles and user messages. Returns matching sessions with excerpts. Use this when the user types /jump <query> or asks to find a conversation.",
+					input: {
+						type: "object",
+						properties: {
+							query: {
+								type: "string",
+								description: "Keyword to search for in session titles and message content",
+							},
+						},
+						required: ["query"],
+						additionalProperties: false,
+					} as const,
+					async execute(input, context) {
+						const { query } = input as { query: string }
+						const matches = searchSessions(OPENCODE_DB, query, context.sessionID)
+						lastSearchResults = matches
+
+						if (matches.length === 0) {
+							return { content: `No conversations found matching "${query}".` }
+						}
+
+						const options = buildQuestionOptions(matches)
+						return {
+							content: `${JSON.stringify(options)}\n\nResults are cached. Call project_jump with pick=N and mode to open the user's choice.`,
+						}
+					},
+				})
+
+				editor.add({
+					name: "project_list",
+					description:
+						"List all known OpenCode projects. Use this to discover which projects exist across your workspace.",
+					input: { type: "object", properties: {}, additionalProperties: false } as const,
+					async execute() {
+						const projects = listProjects(OPENCODE_DB)
+						if (projects.length === 0) return { content: "No projects found." }
+
+						const lines = ["# Projects\n"]
+						for (const worktree of projects) {
+							lines.push(`- **${projectDisplayName(worktree)}** — \`${worktree}\``)
+						}
+						return { content: lines.join("\n") }
+					},
+				})
+			})
+		} catch (error) {
+			console.error("opencode-session-skills: failed to register tools", error)
+		}
 	},
 } satisfies Plugin.Plugin

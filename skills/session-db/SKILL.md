@@ -5,79 +5,102 @@ description: Use when querying the OpenCode SQLite database — looking up sessi
 
 # OpenCode Database Reference
 
-All sessions, messages, and parts live in a single SQLite database. Timestamps are milliseconds — always divide by 1000.
+Sessions and messages live in a single SQLite database. Timestamps are milliseconds — always divide by 1000. Open it read-only: `sqlite3 -readonly <db> "<query>"`.
 
 ## Database Location
 
 ```bash
-opencode db path
+opencode debug paths
 ```
 
-Default: `~/.local/share/opencode/opencode.db`
+Look for the `db` line. Default: `~/.local/share/opencode/opencode.db`
 
 ## Schema
 
-| Table     | Key columns                                                |
-| --------- | ---------------------------------------------------------- |
-| `session` | `id`, `title`, `time_created` (ms), `time_updated` (ms)   |
-| `message` | `id`, `session_id`, `time_created` (ms), `data` (JSON)    |
-| `part`    | `id`, `message_id`, `session_id`, `time_created` (ms), `data` (JSON) |
+| Table             | Key columns                                                                                     |
+| ----------------- | ----------------------------------------------------------------------------------------------- |
+| `session_v2`      | `id`, `project_id`, `parent_id`, `fork_session_id`, `directory`, `title`, `time_created` (ms), `time_updated` (ms) |
+| `session_message` | `session_id`, `seq`, `type`, `time_created` (ms), `data` (JSON)                                 |
+| `project`         | `id`, `worktree`, `time_active` (ms), `time_archived` (ms)                                      |
 
-`part.data` is JSON. Text: `$.text` when `$.type = 'text'`. Tool inputs: `$.input`.
+`parent_id` is set on subagent sessions. A fork points at its source through `fork_session_id`.
+
+Message `type` and `data` shapes:
+
+| `type`       | `data`                                                              |
+| ------------ | ------------------------------------------------------------------- |
+| `user`       | `{ "text": ... }`                                                   |
+| `synthetic`  | `{ "text": ... }` (pushed or injected context)                      |
+| `assistant`  | `{ "content": [{ "type": "text", "text": ... }, ...] }`             |
+
+Other types (`system`, `shell`, `compaction`, `idle`, ...) carry no conversation text.
+
+The legacy `session`, `message` and `part` tables only hold history from before V2. Don't use them for recent work.
 
 ## Quick Reference
 
 | Goal | Query target |
 |------|-------------|
-| Find session by title | `session.title LIKE '%x%'` |
-| Search message content | `json_extract(part.data, '$.text')` |
-| Read full conversation | `part` JOIN `message` WHERE `session_id` |
+| Find session by title | `session_v2.title LIKE '%x%'` |
+| Search what the user wrote | `json_extract(data, '$.text')` on `session_message` where `type IN ('user', 'synthetic')` |
+| Read full conversation | `session_message` WHERE `session_id` ORDER BY `seq`, assistant text via `json_each` |
 | Filter by date | `datetime(time_created/1000, 'unixepoch', 'localtime')` |
 
 ## Common Queries
 
 **List recent sessions:**
 ```sql
-SELECT id, title,
+SELECT id, title, directory,
   datetime(time_created/1000, 'unixepoch', 'localtime') as created,
   datetime(time_updated/1000, 'unixepoch', 'localtime') as updated
-FROM session ORDER BY time_updated DESC LIMIT 20;
+FROM session_v2 WHERE parent_id IS NULL
+ORDER BY time_updated DESC LIMIT 20;
 ```
 
 **Search by title:**
 ```sql
-SELECT id, title, datetime(time_created/1000, 'unixepoch', 'localtime')
-FROM session WHERE lower(title) LIKE '%keyword%'
-ORDER BY time_updated DESC;
+SELECT id, title, directory, datetime(time_updated/1000, 'unixepoch', 'localtime')
+FROM session_v2 WHERE parent_id IS NULL AND lower(title) LIKE '%keyword%'
+ORDER BY time_updated DESC LIMIT 20;
 ```
 
-**Search message content:**
+**Search user text:**
 ```sql
--- Searches both user/AI text and tool call arguments
-SELECT DISTINCT s.id, s.title,
-  datetime(s.time_created/1000, 'unixepoch', 'localtime') as created
-FROM part p
-JOIN message m ON p.message_id = m.id
-JOIN session s ON m.session_id = s.id
-WHERE (lower(json_extract(p.data, '$.text')) LIKE '%keyword%'
-    OR lower(json_extract(p.data, '$.input')) LIKE '%keyword%')
-ORDER BY p.time_created DESC;
+SELECT s.id, s.title, s.directory,
+  datetime(s.time_updated/1000, 'unixepoch', 'localtime') as updated
+FROM session_v2 s
+WHERE s.parent_id IS NULL
+  AND s.id IN (
+    SELECT m.session_id FROM session_message m
+    WHERE m.type IN ('user', 'synthetic')
+      AND lower(json_extract(m.data, '$.text')) LIKE '%keyword%'
+  )
+ORDER BY s.time_updated DESC LIMIT 20;
 ```
 
 **Read conversation content:**
 ```sql
-SELECT json_extract(p.data, '$.text')
-FROM part p
-JOIN message m ON p.message_id = m.id
-WHERE m.session_id = 'SESSION_ID'
-  AND json_extract(p.data, '$.type') = 'text'
-ORDER BY p.time_created;
+SELECT m.seq, m.type,
+  CASE m.type
+    WHEN 'assistant' THEN (
+      SELECT group_concat(json_extract(c.value, '$.text'), char(10))
+      FROM json_each(m.data, '$.content') c
+      WHERE json_extract(c.value, '$.type') = 'text')
+    ELSE json_extract(m.data, '$.text')
+  END AS text
+FROM session_message m
+WHERE m.session_id = 'SESSION_ID' AND m.type IN ('user', 'synthetic', 'assistant')
+ORDER BY m.seq LIMIT 50;
 ```
 
 ## Common Mistakes
 
 **Using timestamps directly** — they're milliseconds, not seconds. Always `time_created/1000`.
 
-**Title-only search** — titles are often empty or generic. Search `part.data` content too. Run both queries in parallel.
+**Title-only search** — titles are often empty or generic. Search user text too. Run both queries in parallel.
+
+**Searching assistant text across all sessions** — it's very slow (tens of seconds on a large database). Find the session through titles and user text first, then read its assistant text with the conversation query.
 
 **Assuming `time_created` = last activity** — sessions span days. A "this morning" session may have `time_created` from last week. Check `time_updated` too.
+
+**Forgetting `parent_id IS NULL`** — subagent sessions otherwise show up as separate conversations.
