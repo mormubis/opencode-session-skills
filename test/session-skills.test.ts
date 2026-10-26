@@ -5,6 +5,8 @@ import * as os from "node:os"
 import * as path from "node:path"
 import {
   buildLaunchArgv,
+  jumpPromptText,
+  jumpQuery,
   listProjects,
   loadSkills,
   parseFrontmatter,
@@ -124,5 +126,30 @@ describe("buildLaunchArgv", () => {
   test("only passes flags the V2 TUI has", () => {
     expect(buildLaunchArgv("/p", "ses_1", "hi")).toEqual(["opencode", "--session", "ses_1", "--prompt", "hi", "/p"])
     expect(buildLaunchArgv("/p")).toEqual(["opencode", "/p"])
+  })
+})
+
+describe("/jump", () => {
+  test("jumpQuery strips the command and whitespace", () => {
+    expect(jumpQuery("  herdr  ")).toBe("herdr")
+    expect(jumpQuery("/jump herdr")).toBe("herdr")
+    expect(jumpQuery("   ")).toBe("")
+  })
+
+  test("jumpPromptText asks for a query when there is none", () => {
+    const text = jumpPromptText("", [])
+    expect(text).toContain("project_search")
+    expect(text).not.toContain("No conversations found")
+  })
+
+  test("jumpPromptText reports no matches", () => {
+    expect(jumpPromptText("zzz", [])).toBe('No conversations found matching "zzz".')
+  })
+
+  test("jumpPromptText starts with Search results for, so excerpts skip it", () => {
+    const match: SessionMatch = { sessionId: "s1", title: "T", timeUpdated: Date.now(), excerpt: "", projectPath: "/p", projectName: "p" }
+    const text = jumpPromptText("herdr", [match])
+    expect(text.startsWith('Search results for "herdr"')).toBe(true)
+    expect(text).toContain("project_jump")
   })
 })

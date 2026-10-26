@@ -557,6 +557,18 @@ function buildQuestionOptions(
 	})
 }
 
+export function jumpQuery(text: string): string {
+	return text.replace(/^\s*\/jump\b/, "").trim()
+}
+
+export function jumpPromptText(query: string, matches: SessionMatch[]): string {
+	if (!query) {
+		return "The user ran /jump without a search term. Ask them what to search for, then call project_search with their answer."
+	}
+	if (matches.length === 0) return `No conversations found matching "${query}".`
+	return `Search results for "${query}" are ready (${matches.length} found). Use the question tool to ask the user which conversation to jump to. Use these options:\n${JSON.stringify(buildQuestionOptions(matches))}\n\nAfter they pick, ask resume or fork with a second question. Then call project_jump with pick=N and the chosen mode.`
+}
+
 const PROMPT_FILE_THRESHOLD = 500
 
 async function resolvePrompt(prompt?: string): Promise<string | undefined> {
@@ -887,6 +899,26 @@ export default {
 			})
 		} catch (error) {
 			console.error("opencode-session-skills: failed to register tools", error)
+		}
+
+		try {
+			await ctx.command.transform((editor) => {
+				editor.add({
+					name: "jump",
+					description: "Search conversations across all projects and jump to one",
+					async execute({ sessionID, prompt, delivery }) {
+						const query = jumpQuery(prompt.text)
+						let matches: SessionMatch[] = []
+						if (query) {
+							matches = searchSessions(OPENCODE_DB, query, sessionID)
+							lastSearchResults = matches
+						}
+						await ctx.session.prompt({ ...prompt, sessionID, text: jumpPromptText(query, matches), delivery })
+					},
+				})
+			})
+		} catch (error) {
+			console.error("opencode-session-skills: failed to register commands", error)
 		}
 	},
 } satisfies Plugin.Plugin
