@@ -615,7 +615,7 @@ async function forkSession(sessionId: string): Promise<{ id: string; directory: 
 // PLUGIN
 // =============================================================================
 
-export const SKILLS_DIR = path.resolve(__dirname, "../../skills")
+export const SKILLS_DIR = path.resolve(__dirname, "skills")
 
 export function parseFrontmatter(raw: string): { data: Record<string, string>; body: string } {
 	const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/)

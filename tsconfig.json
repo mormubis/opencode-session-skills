@@ -9,5 +9,5 @@
     "moduleResolution": "bundler",
     "types": ["bun"]
   },
-  "include": [".opencode/plugins/session-skills.ts", "test/**/*.ts"]
+  "include": ["index.ts", "test/**/*.ts"]
 }

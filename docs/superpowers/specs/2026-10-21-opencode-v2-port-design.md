@@ -51,7 +51,7 @@ All checked on this machine on 2026-10-21.
 - Plugins run inside the shared background service (`opencode serve --service`). Its runtime is Bun 1.4.2, so `bun:sqlite`, `Bun.spawn`, `Bun.spawnSync` and `Bun.write` keep working.
 - There is one plugin instance per location (`ctx.location.directory`).
 - `process.env` is the service's env, frozen from whichever pane started the service. The service's `HERDR_PANE_ID` was `wT:p1` while this shell's was `w1W:p1`. `HERDR_ENV`, `TERM_PROGRAM` and `GHOSTTY_RESOURCES_DIR` matched, which is why env-based detection works for Adrian today.
-- The global config entry for this repo (still under the V1 `plugin` key, which V2 accepts) resolves through `package.json` `main` to `.opencode/plugins/session-skills.ts`. The log shows 33 load attempts of that file across 4 service runs.
+- The global config entry for this repo (still under the V1 `plugin` key, which V2 accepts) is a directory entry. V2 resolves it only through a root `index.ts`, not `package.json` `main`, so with the plugin in `.opencode/plugins/` it only loaded inside this repo (absent from `opencode-kagi-search`, where `/jump` returned `CommandNotFoundError`).
 - V2 also auto-loads every `.ts`/`.js` file directly inside a discovered `.opencode/plugins/` directory. A test or helper file placed there would be loaded as a plugin whenever OpenCode runs in this repo.
 - `bun` isn't installed. `BUN_BE_BUN=1 opencode test` runs `bun test` on the embedded runtime.
 
@@ -97,9 +97,9 @@ Three things are unverified, and each has a fallback. Check them before building
 
 ### Layout
 
-- The plugin stays in `.opencode/plugins/session-skills.ts`, and `package.json` `main` keeps pointing at it. V2 already resolves it there; only the code is wrong.
+- The plugin lives in a root `index.ts`, and `package.json` points `main` and `exports["."]` at it.
 - `package.json`: version `2.0.0`. Drop the `@opencode-ai/plugin` dependency. Add devDependencies `@opencode/plugin` (`^2.1.2`, types only), `@types/bun` and `typescript`. Scripts: `"typecheck": "tsc --noEmit"` and `"test": "BUN_BE_BUN=1 opencode test"`.
-- A root `tsconfig.json`: strict, `noEmit`, Bun types, covering `.opencode/plugins/session-skills.ts` and `test/`.
+- A root `tsconfig.json`: strict, `noEmit`, Bun types, covering `index.ts` and `test/`.
 - A root `.gitignore` with `node_modules/`, since installing the devDependencies creates one.
 - Tests live in `test/session-skills.test.ts`, never under `.opencode/plugins/`.
 
@@ -247,7 +247,7 @@ Content edits only. IDs and directory names stay.
 
 ## Calls made without Adrian (check these)
 
-- The file stays in `.opencode/plugins/`. The plan in chat said to move it to a root `index.ts`, but the log shows its location was never the problem.
+- The plugin moved to a root `index.ts` during the build: in `.opencode/plugins/` it only loaded inside this repo.
 - Plugin id `opencode-session-skills`, version `2.0.0`.
 - Jumps open the session's own directory, not its project root.
 - Search covers titles plus user and synthetic text, runs synchronously in the service, and leaves out assistant text.

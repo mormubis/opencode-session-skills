@@ -13,7 +13,7 @@ import {
   searchSessions,
   SKILLS_DIR,
   type SessionMatch,
-} from "../.opencode/plugins/session-skills.ts"
+} from "../index.ts"
 
 describe("parseFrontmatter", () => {
   test("splits single-line pairs from the body", () => {
