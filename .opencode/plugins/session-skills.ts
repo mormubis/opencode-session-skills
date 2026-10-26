@@ -834,6 +834,56 @@ export default {
 						return { content: `Opened ${windowName} in a new ${destination} (${modeLabel}).` }
 					},
 				})
+
+				editor.add({
+					name: "session_push",
+					description:
+						"Send a message to another OpenCode session through the shared OpenCode service, so a TUI showing that session updates live. An idle session starts a turn in the background right away. A busy session handles the message after its current turn. With noReply=true no turn starts: the message stays pending and joins the conversation on the session's next turn.",
+					input: {
+						type: "object",
+						properties: {
+							sessionId: {
+								type: "string",
+								description: "Target session ID (use project_search to find it)",
+							},
+							message: {
+								type: "string",
+								description: "Message to send to the session",
+							},
+							noReply: {
+								type: "boolean",
+								description:
+									"If true, don't start a turn. The message joins the conversation on the session's next turn.",
+							},
+						},
+						required: ["sessionId", "message"],
+						additionalProperties: false,
+					} as const,
+					async execute(input) {
+						const { sessionId, message, noReply } = input as {
+							sessionId: string
+							message: string
+							noReply?: boolean
+						}
+						try {
+							await ctx.session.prompt({
+								sessionID: sessionId,
+								text: message,
+								delivery: "queue",
+								resume: !noReply,
+							})
+						} catch (error) {
+							// The service's errors have an empty message and only a _tag, which the host shows as a bare "Tool.Error".
+							const reason = (error as Error).message || (error as { _tag?: string })._tag || String(error)
+							throw new Error(`Failed to push to session ${sessionId}: ${reason}`)
+						}
+						return {
+							content: noReply
+								? `Message queued for session ${sessionId} without starting a turn. It joins the conversation on the session's next turn.`
+								: `Message sent to session ${sessionId}. It starts a turn now, or after the current one if the session is busy.`,
+						}
+					},
+				})
 			})
 		} catch (error) {
 			console.error("opencode-session-skills: failed to register tools", error)
