@@ -13,7 +13,6 @@ Find a session, then open it with `project_jump()` in resume or fork mode.
 |------|------|
 | Search by keyword | `project_search({ query: "keyword" })` |
 | Browse all projects | `project_list()` |
-| Interactive UI picker | `project_sessions()` |
 | Open session | `project_jump({ projectPath, sessionId, mode, agent })` |
 
 ## Jump to It
@@ -58,21 +57,6 @@ project_jump({
 
 `agent` takes an **agent name** — `"build"`, `"plan"`, or any custom agent defined in config. It is NOT a model ID (that's the unrelated `-m`/`--model` CLI flag, which this tool doesn't expose) and it's unrelated to an agent's own `mode: primary | subagent | all` config field (that classifies the agent itself, not which mode a session is in). Omit `agent` to start with whatever `default_agent` is configured.
 
-## Closing the Current Session
-
-Pass `closeCurrent: true` to exit the current session right after the new terminal opens successfully:
-
-```
-project_jump({
-  projectPath: "/path/to/project",
-  sessionId: "ses_abc123",
-  mode: "resume",
-  closeCurrent: true
-})
-```
-
-Only exits on success — if the terminal fails to open, the current session stays open.
-
 ## Bash Fallback
 
 If `project_jump()` is unavailable, use the TUI directly:
@@ -81,11 +65,14 @@ If `project_jump()` is unavailable, use the TUI directly:
 # Resume
 opencode -s <session_id> <project_path>
 
-# Fork
-opencode -s <session_id> --fork <project_path>
+# Fork: copy the session, then open the copy
+opencode api post /api/session/<session_id>/fork --data '{}'
+opencode -s <new_session_id> <project_path>
 ```
 
-**Never use `opencode run --session`** — `run` requires a message and will fail with "You must provide a message or a command".
+The fork call prints JSON. `data.id` is the new session id and `data.location.directory` is the directory to open.
+
+**Never use `opencode run --session`**: `run` is non-interactive, so it never opens the TUI.
 
 The destination is detected automatically from the environment, checked in this order: `HERDR_ENV=1` → new Herdr workspace (via `herdr workspace create` + `herdr pane run`, focused, labeled with the project name), `TMUX` → tmux window, macOS → terminal app detected via env vars (`ITERM_SESSION_ID` → iTerm, `GHOSTTY_RESOURCES_DIR` → Ghostty). `project_jump()` handles this; the bash command above opens in the current terminal.
 

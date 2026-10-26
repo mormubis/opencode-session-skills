@@ -385,6 +385,7 @@ async function openHerdrWorkspace(
 // TERMINAL — UNIFIED ENTRY POINT
 // =============================================================================
 
+// shortcut: process.env is the shared service's env, frozen from whichever terminal started it, not the caller's. Fine while every terminal runs Herdr in Ghostty. Move terminal launching into a CLI plugin if jumps open in the wrong place.
 async function openTerminal(
 	cwd: string,
 	argv?: string[],
@@ -568,28 +569,34 @@ async function resolvePrompt(prompt?: string): Promise<string | undefined> {
 	return `Read the file at ${promptPath} and follow the instructions in it. Delete the file after reading.`
 }
 
-function buildLaunchArgv(
-	projectPath: string,
-	sessionId?: string,
-	mode?: "resume" | "fork",
-	prompt?: string,
-	agent?: string,
-): string[] {
+export function buildLaunchArgv(projectPath: string, sessionId?: string, prompt?: string): string[] {
 	const argv = ["opencode"]
-	if (sessionId) {
-		argv.push("--session", sessionId)
-		if (mode === "fork") {
-			argv.push("--fork")
-		}
-	}
-	if (prompt) {
-		argv.push("--prompt", prompt)
-	}
-	if (agent) {
-		argv.push("--agent", agent)
-	}
+	if (sessionId) argv.push("--session", sessionId)
+	if (prompt) argv.push("--prompt", prompt)
 	argv.push(projectPath)
 	return argv
+}
+
+// Calls back into this same service: it can't answer while its event loop is blocked, so a sync spawn would deadlock.
+async function opencodeApi(apiPath: string, body: Record<string, unknown>): Promise<any> {
+	const proc = Bun.spawn([process.execPath, "api", "post", apiPath, "--data", JSON.stringify(body)], {
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	])
+	if (exitCode !== 0) {
+		throw new Error([stdout, stderr].map((text) => text.trim()).filter(Boolean).join(" ") || `opencode api exited with code ${exitCode}`)
+	}
+	return stdout.trim() ? JSON.parse(stdout).data : undefined
+}
+
+async function forkSession(sessionId: string): Promise<{ id: string; directory: string }> {
+	const data = await opencodeApi(`/api/session/${sessionId}/fork`, {})
+	return { id: data.id, directory: data.location.directory }
 }
 
 // =============================================================================
@@ -716,6 +723,115 @@ export default {
 							lines.push(`- **${projectDisplayName(worktree)}** — \`${worktree}\``)
 						}
 						return { content: lines.join("\n") }
+					},
+				})
+
+				editor.add({
+					name: "project_jump",
+					description:
+						"Open a new terminal with OpenCode at a specific project, optionally resuming or forking an existing session, and optionally starting in a specific agent (e.g. build or plan, the same Build/Plan mode shown in the TUI). The user should choose the mode (resume or fork) before calling this tool.",
+					input: {
+						type: "object",
+						properties: {
+							projectPath: {
+								type: "string",
+								description: "Absolute path to the project directory",
+							},
+							sessionId: {
+								type: "string",
+								description: "Session ID to resume or fork. Omit to start a new session.",
+							},
+							mode: {
+								type: "string",
+								enum: ["resume", "fork"],
+								description: "Whether to resume the session in-place or fork a copy. Defaults to resume.",
+							},
+							agent: {
+								type: "string",
+								description:
+									"OpenCode agent name to start the session with, e.g. build or plan (or a custom agent from config), the same Build/Plan mode shown in the TUI, cycled with Tab. This is an agent name, not a model ID. Omit to use the project's default_agent.",
+							},
+							pick: {
+								type: "number",
+								description:
+									"Pick number from the last search results (1-based). Resolves projectPath and sessionId from cache.",
+							},
+							prompt: {
+								type: "string",
+								description: "Prompt to send as the first message when opening the session.",
+							},
+						},
+						additionalProperties: false,
+					} as const,
+					async execute(input) {
+						const args = input as {
+							projectPath?: string
+							sessionId?: string
+							mode?: "resume" | "fork"
+							agent?: string
+							pick?: number
+							prompt?: string
+						}
+						let { projectPath, sessionId } = args
+						const { mode, agent, prompt } = args
+
+						if (args.pick != null) {
+							const index = args.pick - 1
+							if (index < 0 || index >= lastSearchResults.length) {
+								return {
+									content: `Invalid pick: ${args.pick}. Last search had ${lastSearchResults.length} results.`,
+								}
+							}
+							const match = lastSearchResults[index]
+							projectPath = match.projectPath
+							sessionId = match.sessionId
+						}
+
+						if (!projectPath) {
+							return { content: "Missing projectPath. Provide a path or a pick number." }
+						}
+
+						const forking = mode === "fork" && !!sessionId
+						if (forking && sessionId) {
+							try {
+								const forked = await forkSession(sessionId)
+								sessionId = forked.id
+								projectPath = forked.directory
+							} catch (error) {
+								return {
+									content: `Failed to fork session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+								}
+							}
+						}
+
+						const existing = !!sessionId
+						if (agent) {
+							try {
+								if (sessionId) {
+									await ctx.session.switchAgent({ sessionID: sessionId, agent })
+								} else {
+									const created = await ctx.session.create({ agent, location: { directory: projectPath } })
+									sessionId = created.id
+								}
+							} catch (error) {
+								return {
+									content: `Failed to set agent ${agent}: ${error instanceof Error ? error.message : String(error)}`,
+								}
+							}
+						}
+
+						const resolvedPrompt = await resolvePrompt(prompt)
+						const launchArgv = buildLaunchArgv(projectPath, sessionId, resolvedPrompt)
+						const windowName = path.basename(projectPath)
+						const result = await openTerminal(projectPath, launchArgv, windowName)
+						const destination = process.env.HERDR_ENV === "1" ? "Herdr workspace" : "terminal"
+
+						if (!result.success) {
+							return { content: `Failed to open ${destination}: ${result.error ?? "unknown error"}` }
+						}
+
+						const modeLabel = forking ? "forking" : existing ? "resuming" : "new session"
+						return { content: `Opened ${windowName} in a new ${destination} (${modeLabel}).` }
 					},
 				})
 			})

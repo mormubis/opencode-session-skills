@@ -4,6 +4,7 @@ import { mkdtempSync } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import {
+  buildLaunchArgv,
   listProjects,
   loadSkills,
   parseFrontmatter,
@@ -118,3 +119,10 @@ function makeDb(root: string): string {
   db.close()
   return file
 }
+
+describe("buildLaunchArgv", () => {
+  test("only passes flags the V2 TUI has", () => {
+    expect(buildLaunchArgv("/p", "ses_1", "hi")).toEqual(["opencode", "--session", "ses_1", "--prompt", "hi", "/p"])
+    expect(buildLaunchArgv("/p")).toEqual(["opencode", "/p"])
+  })
+})
