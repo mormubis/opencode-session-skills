@@ -227,7 +227,7 @@ Content edits only. IDs and directory names stay.
 3. `opencode api get /api/skill` lists the four skills, and a fresh session sees the four tools.
 4. `/jump <term>` returns options for a V2 conversation. Picking one with resume opens a Herdr workspace on that session. A jump with `prompt` submits it as the first message.
 5. Fork opens a new session that has `fork_session_id` set. If it also has a `parent_id`, include forks in the search filter (`parent_id IS NULL OR fork_session_id IS NOT NULL`).
-6. `agent: "plan"` opens in Plan, both for an existing session and for a brand-new directory.
+6. `agent: "plan"` opens in Plan, both for an existing session and for a brand-new directory. With `default_agent` set to `plan`, the check that can fail is `agent: "build"`, and Task 4 ran it.
 7. `session_push` to a throwaway session in another project: `noReply: true` stores the message without a turn, `noReply: false` runs a turn, and a push to a busy session waits until the current turn ends.
 8. `project_search` takes under a second warm on the real DB.
 
@@ -262,5 +262,5 @@ Content edits only. IDs and directory names stay.
 ## Spike results
 
 - Cross-project writes: create (with `agent` and `location.directory` of another project) and `POST /agent` work against a session in `opencode-kagi-search`. A `POST /prompt` with `delivery: "queue"` and `resume: false` is accepted but does not start a turn. It stays pending in `GET /api/session/$ID/inbox` (`type: "user"`, `delivery: "queue"`) and is absent from `GET /message` while the session is idle. It was not dropped: after a normal prompt (`delivery: "steer"`) started a turn, the item left the inbox and joined history as a `user` message, between the turn's assistant steps and about 3.6 s after the steer prompt (history order: steer prompt, assistant, synthetic, assistant, queued message, assistant, `idle`). So a `session_push` to an idle session isn't visible until something starts a turn there. These calls ran through `opencode api`, not `ctx`, so `ctx.session.*` behavior is not verified.
-- TUI shows a session's stored agent: yes (Adrian opened the session with `opencode -s $ID <dir>` and the indicator showed Plan).
+- TUI shows a session's stored agent: yes (Adrian opened the session with `opencode -s $ID <dir>` and the indicator showed Plan). Task 1's check couldn't fail, because `default_agent` is `plan`. Task 4 confirmed the result: a stored `build` agent ran its turn as `build`.
 - Fork: `data.location.directory` equals the source's (the kagi path). `data.parentID` is not set (`null`). The link is in `data.fork.sessionID` (equals the source id), with `data.fork.boundary` `{type: "through", messageID: <source's last listed message>}`.

@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-21-opencode-v2-port-design.md`
 
+> The plugin moved to a root `index.ts` in Task 6b. The `.opencode/plugins/session-skills.ts` references below are historical.
+
 ## Global Constraints
 
 - V2 only. The default export is `{ id: "opencode-session-skills", setup(ctx) }`. No V1 `server()` export, no imports from `@opencode-ai/plugin` or `@opencode-ai/sdk`.

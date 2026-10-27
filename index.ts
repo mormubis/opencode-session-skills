@@ -19,7 +19,20 @@ import { fileURLToPath } from "node:url"
 import type { Plugin } from "@opencode/plugin"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-export const OPENCODE_DB = path.join(os.homedir(), ".local", "share", "opencode", "opencode.db")
+
+export function opencodeDbPath(): string {
+	return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), "opencode", "opencode.db")
+}
+
+export function describeError(error: unknown): string {
+	// The service's errors have an empty message and only a _tag, which the host shows as a bare "Tool.Error".
+	const { message, _tag } = (error ?? {}) as { message?: string; _tag?: string }
+	return message || _tag || String(error)
+}
+
+export function launchDirectory(preferred: string, fallback: string): string {
+	return existsSync(preferred) ? preferred : fallback
+}
 
 // =============================================================================
 // SHELL ESCAPING
@@ -607,7 +620,7 @@ async function opencodeApi(apiPath: string, body: Record<string, unknown>): Prom
 }
 
 async function forkSession(sessionId: string): Promise<{ id: string; directory: string }> {
-	const data = await opencodeApi(`/api/session/${sessionId}/fork`, {})
+	const data = await opencodeApi(`/api/session/${encodeURIComponent(sessionId)}/fork`, {})
 	return { id: data.id, directory: data.location.directory }
 }
 
@@ -686,11 +699,19 @@ export default {
 			console.error("opencode-session-skills: failed to register skills", error)
 		}
 
-		let lastSearchResults: SessionMatch[] = []
+		const lastSearchResults = new Map<string, SessionMatch[]>()
 
 		try {
 			await ctx.tool.transform((editor) => {
-				editor.add({
+				const add = (tool: Parameters<typeof editor.add>[0]) => {
+					try {
+						editor.add(tool)
+					} catch (error) {
+						console.error(`opencode-session-skills: failed to add tool ${tool.name}`, error)
+					}
+				}
+
+				add({
 					name: "project_search",
 					description:
 						"Search conversations across ALL OpenCode projects by keyword, matching session titles and user messages. Returns matching sessions with excerpts. Use this when the user types /jump <query> or asks to find a conversation.",
@@ -707,8 +728,8 @@ export default {
 					} as const,
 					async execute(input, context) {
 						const { query } = input as { query: string }
-						const matches = searchSessions(OPENCODE_DB, query, context.sessionID)
-						lastSearchResults = matches
+						const matches = searchSessions(opencodeDbPath(), query, context.sessionID)
+						lastSearchResults.set(context.sessionID, matches)
 
 						if (matches.length === 0) {
 							return { content: `No conversations found matching "${query}".` }
@@ -721,13 +742,13 @@ export default {
 					},
 				})
 
-				editor.add({
+				add({
 					name: "project_list",
 					description:
 						"List all known OpenCode projects. Use this to discover which projects exist across your workspace.",
 					input: { type: "object", properties: {}, additionalProperties: false } as const,
 					async execute() {
-						const projects = listProjects(OPENCODE_DB)
+						const projects = listProjects(opencodeDbPath())
 						if (projects.length === 0) return { content: "No projects found." }
 
 						const lines = ["# Projects\n"]
@@ -738,7 +759,7 @@ export default {
 					},
 				})
 
-				editor.add({
+				add({
 					name: "project_jump",
 					description:
 						"Open a new terminal with OpenCode at a specific project, optionally resuming or forking an existing session, and optionally starting in a specific agent (e.g. build or plan, the same Build/Plan mode shown in the TUI). The user should choose the mode (resume or fork) before calling this tool.",
@@ -764,7 +785,7 @@ export default {
 									"OpenCode agent name to start the session with, e.g. build or plan (or a custom agent from config), the same Build/Plan mode shown in the TUI, cycled with Tab. This is an agent name, not a model ID. Omit to use the project's default_agent.",
 							},
 							pick: {
-								type: "number",
+								type: "integer",
 								description:
 									"Pick number from the last search results (1-based). Resolves projectPath and sessionId from cache.",
 							},
@@ -775,7 +796,7 @@ export default {
 						},
 						additionalProperties: false,
 					} as const,
-					async execute(input) {
+					async execute(input, context) {
 						const args = input as {
 							projectPath?: string
 							sessionId?: string
@@ -788,13 +809,14 @@ export default {
 						const { mode, agent, prompt } = args
 
 						if (args.pick != null) {
+							const results = lastSearchResults.get(context.sessionID) ?? []
 							const index = args.pick - 1
-							if (index < 0 || index >= lastSearchResults.length) {
+							if (index < 0 || index >= results.length) {
 								return {
-									content: `Invalid pick: ${args.pick}. Last search had ${lastSearchResults.length} results.`,
+									content: `Invalid pick: ${args.pick}. Last search had ${results.length} results.`,
 								}
 							}
-							const match = lastSearchResults[index]
+							const match = results[index]
 							projectPath = match.projectPath
 							sessionId = match.sessionId
 						}
@@ -808,10 +830,10 @@ export default {
 							try {
 								const forked = await forkSession(sessionId)
 								sessionId = forked.id
-								projectPath = forked.directory
+								projectPath = launchDirectory(forked.directory, projectPath)
 							} catch (error) {
 								return {
-									content: `Failed to fork session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+									content: `Failed to fork session ${sessionId}: ${describeError(error)}`,
 								}
 							}
 						}
@@ -827,7 +849,7 @@ export default {
 								}
 							} catch (error) {
 								return {
-									content: `Failed to set agent ${agent}: ${error instanceof Error ? error.message : String(error)}`,
+									content: `Failed to set agent ${agent}: ${describeError(error)}`,
 								}
 							}
 						}
@@ -847,7 +869,7 @@ export default {
 					},
 				})
 
-				editor.add({
+				add({
 					name: "session_push",
 					description:
 						"Send a message to another OpenCode session through the shared OpenCode service, so a TUI showing that session updates live. An idle session starts a turn in the background right away. A busy session handles the message after its current turn. With noReply=true no turn starts: the message stays pending and joins the conversation on the session's next turn.",
@@ -885,9 +907,7 @@ export default {
 								resume: !noReply,
 							})
 						} catch (error) {
-							// The service's errors have an empty message and only a _tag, which the host shows as a bare "Tool.Error".
-							const reason = (error as Error).message || (error as { _tag?: string })._tag || String(error)
-							throw new Error(`Failed to push to session ${sessionId}: ${reason}`)
+							throw new Error(`Failed to push to session ${sessionId}: ${describeError(error)}`)
 						}
 						return {
 							content: noReply
@@ -903,19 +923,29 @@ export default {
 
 		try {
 			await ctx.command.transform((editor) => {
-				editor.add({
-					name: "jump",
-					description: "Search conversations across all projects and jump to one",
-					async execute({ sessionID, prompt, delivery }) {
-						const query = jumpQuery(prompt.text)
-						let matches: SessionMatch[] = []
-						if (query) {
-							matches = searchSessions(OPENCODE_DB, query, sessionID)
-							lastSearchResults = matches
-						}
-						await ctx.session.prompt({ ...prompt, sessionID, text: jumpPromptText(query, matches), delivery })
-					},
-				})
+				try {
+					editor.add({
+						name: "jump",
+						description: "Search conversations across all projects and jump to one",
+						async execute({ sessionID, prompt, delivery }) {
+							const query = jumpQuery(prompt.text)
+							let text: string
+							try {
+								let matches: SessionMatch[] = []
+								if (query) {
+									matches = searchSessions(opencodeDbPath(), query, sessionID)
+									lastSearchResults.set(sessionID, matches)
+								}
+								text = jumpPromptText(query, matches)
+							} catch (error) {
+								text = `Search failed: ${describeError(error)}`
+							}
+							await ctx.session.prompt({ ...prompt, sessionID, text, delivery })
+						},
+					})
+				} catch (error) {
+					console.error("opencode-session-skills: failed to add command jump", error)
+				}
 			})
 		} catch (error) {
 			console.error("opencode-session-skills: failed to register commands", error)

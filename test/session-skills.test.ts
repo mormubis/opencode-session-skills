@@ -1,14 +1,18 @@
 import { Database } from "bun:sqlite"
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { mkdirSync, mkdtempSync } from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import {
+import type { Plugin } from "@opencode/plugin"
+import plugin, {
   buildLaunchArgv,
+  describeError,
   jumpPromptText,
   jumpQuery,
+  launchDirectory,
   listProjects,
   loadSkills,
+  opencodeDbPath,
   parseFrontmatter,
   searchSessions,
   SKILLS_DIR,
@@ -85,8 +89,8 @@ describe("searchSessions", () => {
   })
 })
 
-function makeDb(root: string): string {
-  const file = path.join(root, "test.db")
+function makeDb(root: string, name = "test.db"): string {
+  const file = path.join(root, name)
   const db = new Database(file)
   db.run("CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT, time_active INTEGER, time_archived INTEGER)")
   db.run(
@@ -153,3 +157,128 @@ describe("/jump", () => {
     expect(text).toContain("project_jump")
   })
 })
+
+describe("launchDirectory", () => {
+  test("returns the preferred directory when it exists, else the fallback", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "session-skills-"))
+    expect(launchDirectory(dir, "/fallback")).toBe(dir)
+    expect(launchDirectory(path.join(dir, "gone"), "/fallback")).toBe("/fallback")
+  })
+})
+
+describe("opencodeDbPath", () => {
+  test("follows XDG_DATA_HOME at call time", () => {
+    withEnv("XDG_DATA_HOME", "/xdg", () => expect(opencodeDbPath()).toBe(path.join("/xdg", "opencode", "opencode.db")))
+    withEnv("XDG_DATA_HOME", undefined, () =>
+      expect(opencodeDbPath()).toBe(path.join(os.homedir(), ".local", "share", "opencode", "opencode.db")),
+    )
+  })
+})
+
+describe("describeError", () => {
+  test("prefers message, then _tag, then String()", () => {
+    expect(describeError(new Error("boom"))).toBe("boom")
+    expect(describeError(Object.assign(new Error(""), { _tag: "SessionNotFound" }))).toBe("SessionNotFound")
+    expect(describeError("plain")).toBe("plain")
+    expect(describeError(null)).toBe("null")
+    expect(describeError(undefined)).toBe("undefined")
+  })
+})
+
+describe("plugin setup", () => {
+  test("pick cache is per session, and /jump with no query sends the ask text", async () => {
+    const xdg = mkdtempSync(path.join(os.tmpdir(), "session-skills-xdg-"))
+    mkdirSync(path.join(xdg, "opencode"))
+    makeDb(path.join(xdg, "opencode"), "opencode.db")
+
+    await withEnvAsync("XDG_DATA_HOME", xdg, async () => {
+      const { tools, commands, prompts } = await runSetup()
+      const search = tools.get("project_search")!
+      const jump = tools.get("project_jump")!
+
+      const found = (await search.execute({ query: "herdr" }, { sessionID: "sA" })).content
+      expect(found.startsWith("[{")).toBe(true)
+
+      const other = await jump.execute({ pick: 1 }, { sessionID: "sB" })
+      expect(other.content).toBe("Invalid pick: 1. Last search had 0 results.")
+
+      await commands.get("jump")!.execute({ sessionID: "sC", prompt: { text: "   " }, delivery: "steer" })
+      expect(prompts.at(-1)?.text).toBe(jumpPromptText("", []))
+      const empty = await jump.execute({ pick: 1 }, { sessionID: "sC" })
+      expect(empty.content).toBe("Invalid pick: 1. Last search had 0 results.")
+    })
+  })
+
+  test("/jump reports a failed search as the prompt text", async () => {
+    const xdg = mkdtempSync(path.join(os.tmpdir(), "session-skills-xdg-"))
+    await withEnvAsync("XDG_DATA_HOME", xdg, async () => {
+      const { commands, prompts } = await runSetup()
+      await commands.get("jump")!.execute({ sessionID: "sA", prompt: { text: "herdr" }, delivery: "steer" })
+      expect(prompts.at(-1)?.text.startsWith("Search failed: ")).toBe(true)
+    })
+  })
+
+  test("one rejected tool or command definition does not drop the others", async () => {
+    const { tools, commands } = await runSetup({ rejectTool: "project_search", rejectCommand: "jump" })
+    expect([...tools.keys()]).toEqual(["project_list", "project_jump", "session_push"])
+    expect(commands.size).toBe(0)
+  })
+})
+
+type Tool = { execute: (input: unknown, context: { sessionID: string }) => Promise<{ content: string }> }
+type Command = {
+  execute: (input: { sessionID: string; prompt: { text: string }; delivery: string }) => Promise<void>
+}
+
+async function runSetup(options: { rejectTool?: string; rejectCommand?: string } = {}) {
+  const tools = new Map<string, Tool>()
+  const commands = new Map<string, Command>()
+  const prompts: Array<{ text: string }> = []
+  const ctx = {
+    skill: { transform: async (callback: (editor: { add: () => void }) => void) => callback({ add() {} }) },
+    tool: {
+      transform: async (callback: (editor: { add: (tool: Tool & { name: string }) => void }) => void) =>
+        callback({
+          add(tool) {
+            if (tool.name === options.rejectTool) throw new Error("rejected")
+            tools.set(tool.name, tool)
+          },
+        }),
+    },
+    command: {
+      transform: async (callback: (editor: { add: (command: Command & { name: string }) => void }) => void) =>
+        callback({
+          add(command) {
+            if (command.name === options.rejectCommand) throw new Error("rejected")
+            commands.set(command.name, command)
+          },
+        }),
+    },
+    session: { prompt: async (input: { text: string }) => void prompts.push(input) },
+  }
+  await plugin.setup(ctx as unknown as Plugin.Context)
+  return { tools, commands, prompts }
+}
+
+function withEnv(key: string, value: string | undefined, run: () => void) {
+  const previous = process.env[key]
+  if (value === undefined) delete process.env[key]
+  else process.env[key] = value
+  try {
+    run()
+  } finally {
+    if (previous === undefined) delete process.env[key]
+    else process.env[key] = previous
+  }
+}
+
+async function withEnvAsync(key: string, value: string, run: () => Promise<void>) {
+  const previous = process.env[key]
+  process.env[key] = value
+  try {
+    await run()
+  } finally {
+    if (previous === undefined) delete process.env[key]
+    else process.env[key] = previous
+  }
+}
