@@ -5,6 +5,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import plugin, {
+  buildHerdrSpaceArgv,
   buildLaunchArgv,
   describeError,
   jumpPromptText,
@@ -130,6 +131,15 @@ describe("buildLaunchArgv", () => {
   test("only passes flags the V2 TUI has", () => {
     expect(buildLaunchArgv("/p", "ses_1", "hi")).toEqual(["opencode", "--session", "ses_1", "--prompt", "hi", "/p"])
     expect(buildLaunchArgv("/p")).toEqual(["opencode", "/p"])
+  })
+})
+
+describe("buildHerdrSpaceArgv", () => {
+  test("opens a Herdr app space in the folder, with argv as JSON so prompts keep quotes and newlines", () => {
+    const argv = ["opencode", "--prompt", "line 1\nit's \"quoted\" $HOME `x`", "/p"]
+    const args = buildHerdrSpaceArgv("/p", argv)
+    expect(args.slice(0, -1)).toEqual(["herdr-app", "do", "space.new", "--folder", "/p", "--argv"])
+    expect(JSON.parse(args.at(-1)!)).toEqual(argv)
   })
 })
 
