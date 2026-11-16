@@ -34,7 +34,7 @@ This version targets the OpenCode V2 plugin API. For OpenCode 1.x, install the `
 | `session-db` | Shared reference for the OpenCode SQLite schema and common queries |
 | `session-recover` | Search and read past OpenCode conversations |
 | `session-push` | Send messages or context to another session |
-| `session-jump` | Open another session in a new terminal or Herdr workspace (resume or fork) |
+| `session-jump` | Open another session in a new terminal or Herdr space (resume or fork) |
 
 ## Requirements
 

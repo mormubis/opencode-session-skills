@@ -1,6 +1,6 @@
 ---
 name: session-jump
-description: Use when switching to a different OpenCode conversation, opening a past session in a new terminal or Herdr workspace, or resuming or forking a session from another project.
+description: Use when switching to a different OpenCode conversation, opening a past session in a new terminal or Herdr space, or resuming or forking a session from another project.
 ---
 
 # Jump to Another OpenCode Conversation
@@ -74,7 +74,7 @@ The fork call prints JSON. `data.id` is the new session id and `data.location.di
 
 **Never use `opencode run --session`**: `run` is non-interactive, so it never opens the TUI.
 
-The destination is detected automatically from the environment, checked in this order: `HERDR_ENV=1` → new Herdr workspace (via `herdr workspace create` + `herdr pane run`, focused, labeled with the project name), `TMUX` → tmux window, macOS → terminal app detected via env vars (`ITERM_SESSION_ID` → iTerm, `GHOSTTY_RESOURCES_DIR` → Ghostty). `project_jump()` handles this; the bash command above opens in the current terminal.
+The destination is picked automatically, in this order: the Herdr app is running (`herdr-app status` answers) → new Herdr space (via `herdr-app do space.new`, focused, named after its repo by Herdr), `TMUX` → tmux window, macOS → terminal app detected via env vars (`ITERM_SESSION_ID` → iTerm, `GHOSTTY_RESOURCES_DIR` → Ghostty). `project_jump()` handles this; the bash command above opens in the current terminal.
 
 ## Common Mistakes
 

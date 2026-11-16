@@ -74,6 +74,7 @@ function escapeBatch(str: string): string {
 interface TerminalResult {
 	success: boolean
 	error?: string
+	destination?: string
 }
 
 function buildBashCommand(argv: string[]): string | undefined {
@@ -353,52 +354,39 @@ async function openWindowsTerminal(cwd: string, argv: string[]): Promise<Termina
 }
 
 // =============================================================================
-// TERMINAL — HERDR
+// TERMINAL — HERDR APP
 // =============================================================================
 
-// Herdr (https://herdr.dev) manages its own workspaces/tabs/panes on top of
-// whatever terminal it's running in. When present, prefer its socket API over
-// faking keystrokes into the underlying terminal — that keeps the new pane
-// inside Herdr's layout instead of spawning an untracked tab next to it.
-async function openHerdrWorkspace(
-	cwd: string,
-	argv: string[],
-	label?: string,
-): Promise<TerminalResult> {
-	const createArgs = ["herdr", "workspace", "create", "--cwd", cwd, "--focus"]
-	if (label) createArgs.push("--label", label)
-
-	const created = Bun.spawnSync(createArgs)
-	if (created.exitCode !== 0) {
-		return { success: false, error: `herdr workspace create: ${created.stderr.toString()}` }
-	}
-
-	let paneId: string
+// The Herdr app (https://herdr.dev) runs every terminal in its own core. While its
+// window is up, open a space there instead of faking keystrokes into a terminal app.
+// The timeouts keep a hung app from blocking the shared service.
+function herdrAppRunning(): boolean {
 	try {
-		paneId = JSON.parse(created.stdout.toString()).result.root_pane.pane_id
+		return Bun.spawnSync(["herdr-app", "status"], { stdout: "ignore", stderr: "ignore", timeout: 2000 }).exitCode === 0
 	} catch {
-		return {
-			success: false,
-			error: `herdr workspace create: could not read pane_id from response: ${created.stdout.toString()}`,
-		}
+		return false
 	}
+}
 
-	if (argv.length === 0) return { success: true }
+// argv goes as JSON rather than a shell line, so prompts keep their quotes and newlines.
+export function buildHerdrSpaceArgv(cwd: string, argv: string[]): string[] {
+	return ["herdr-app", "do", "space.new", "--folder", cwd, "--argv", JSON.stringify(argv)]
+}
 
-	// pane run sends command text + Enter into the pane's shell, so build one
-	// already-quoted line rather than trusting herdr to re-escape each arg.
-	const run = Bun.spawnSync(["herdr", "pane", "run", paneId, buildShellCommand(cwd, argv)])
-	if (run.exitCode !== 0) {
-		return { success: false, error: `herdr pane run: ${run.stderr.toString()}` }
+function openHerdrSpace(cwd: string, argv: string[]): TerminalResult {
+	const result = Bun.spawnSync(buildHerdrSpaceArgv(cwd, argv), { timeout: 5000 })
+	if (result.exitCode !== 0) {
+		const output = result.exitedDueToTimeout ? "timed out" : (result.stderr.toString() || result.stdout.toString()).trim()
+		return { success: false, error: `herdr-app space.new: ${output}`, destination: "Herdr space" }
 	}
-	return { success: true }
+	return { success: true, destination: "Herdr space" }
 }
 
 // =============================================================================
 // TERMINAL — UNIFIED ENTRY POINT
 // =============================================================================
 
-// shortcut: process.env is the shared service's env, frozen from whichever terminal started it, not the caller's. Fine while every terminal runs Herdr in Ghostty. Move terminal launching into a CLI plugin if jumps open in the wrong place.
+// shortcut: process.env is the shared service's env, frozen from whichever terminal started it, not the caller's. Only the tmux and terminal-app fallbacks read it, the Herdr app is checked live. Move terminal launching into a CLI plugin if those fallbacks open in the wrong place.
 async function openTerminal(
 	cwd: string,
 	argv?: string[],
@@ -406,8 +394,8 @@ async function openTerminal(
 ): Promise<TerminalResult> {
 	const normalizedArgv = argv ?? []
 
-	if (process.env.HERDR_ENV === "1") {
-		return openHerdrWorkspace(cwd, normalizedArgv, windowName)
+	if (herdrAppRunning()) {
+		return openHerdrSpace(cwd, normalizedArgv)
 	}
 
 	if (process.env.TMUX) {
@@ -858,7 +846,7 @@ export default {
 						const launchArgv = buildLaunchArgv(projectPath, sessionId, resolvedPrompt)
 						const windowName = path.basename(projectPath)
 						const result = await openTerminal(projectPath, launchArgv, windowName)
-						const destination = process.env.HERDR_ENV === "1" ? "Herdr workspace" : "terminal"
+						const destination = result.destination ?? "terminal"
 
 						if (!result.success) {
 							return { content: `Failed to open ${destination}: ${result.error ?? "unknown error"}` }
